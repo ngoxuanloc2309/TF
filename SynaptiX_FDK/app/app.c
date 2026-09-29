@@ -8,6 +8,7 @@
 #include "app_config.h"
 #include "ff.h"
 #include "sx_fatfs.h"
+#include "sx_diskio.h"
 #include "sx_user_msc.h"
 #include "cJSON.h"
 #include "bno055.h"

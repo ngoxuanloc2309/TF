@@ -1,4 +1,5 @@
 #include "sx_diskio.h"
+#include "stm32h5xx_hal.h"
 #include "sx_flash.h"
 #include <string.h>
 #include "logger.h"

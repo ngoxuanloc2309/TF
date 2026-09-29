@@ -19,6 +19,7 @@ extern "C"{
 /* API */
 uint8_t  *sx_diskio_get_buffer(void);      
 uint32_t  sx_diskio_get_block_count(void);
+void      sx_diskio_process(void);
 
 #ifdef __cplusplus
 }

@@ -17,6 +17,7 @@ int sx_fatfs_write_file(const char *path, const uint8_t *data, uint32_t len);
 int sx_fatfs_read_file(const char *path, uint8_t *buf, uint32_t len, uint32_t *out_len);
 
 int sx_fatfs_remount(void);
+void sx_fatfs_debug_list(void);
 
 uint8_t  *sx_fatfs_get_disk_buffer(void);
 uint32_t sx_fatfs_get_block_count(void);

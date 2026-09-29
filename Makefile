@@ -92,6 +92,9 @@ include $(SYNAPTIX_DIR)/synaptix.mk
 include $(USB_TINY_DIR)/src/tinyusb.mk
 
 C_SOURCES += $(addprefix $(USB_TINY_DIR)/,$(TINYUSB_SRC_C))# Add define for USB tiny
+# TinyUSB MCU port (DCD) for STM32H5 (USB FS DRD)
+C_SOURCES += $(USB_TINY_DIR)/src/portable/st/stm32_fsdev/dcd_stm32_fsdev.c \
+             $(USB_TINY_DIR)/src/portable/st/stm32_fsdev/fsdev_common.c
 # SYNAPTIX SOURCES
 C_SOURCES += $(SYNAPTIX_SOURCES)
 

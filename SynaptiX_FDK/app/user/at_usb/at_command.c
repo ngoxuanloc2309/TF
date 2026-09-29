@@ -1,4 +1,5 @@
 #include "at_command.h"
+#include <string.h>
 
 int at_init(AT_Implementation_t *at_impl, AT_Command_t *commands, size_t num_commands){
     if(at_impl == NULL || commands == NULL || num_commands == 0){
