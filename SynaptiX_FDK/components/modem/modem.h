@@ -40,6 +40,7 @@ struct modem
     uint8_t isBusy;
     uint8_t isReady;
     uint32_t timeOut;
+    uint32_t elapsed;      /* ms since command sent / last RX byte */
     uint32_t resID;
     modem_command_t *cmd;
 };

@@ -37,7 +37,7 @@ void sx_sleep_manager_enter(sx_sleep_manager_t *mgr)
     sx_delay_ms(100);
     mgr->module.gps->latitude   = 0.0f;
     mgr->module.gps->longtitude = 0.0f;
-    sim76xx_power_off(mgr->module.sim);
+    sim76xx_power_off_blocking(mgr->module.sim);
     sx_delay_ms(500);
 
     log_info(TAG, "Setting RTC wakeup = %lu sec", sleep_sec);  

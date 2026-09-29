@@ -180,40 +180,175 @@ void sim76xx_init(sim76xx_t *dce)
     dce->retry_count = 0;
     dce->rssi = 0;
     dce->ber = 0;
+    dce->pwr_step = SIM76XX_PWR_IDLE;
+    dce->pwr_deadline = 0;
+    dce->pwr_then_on = 0;
+    dce->start_pending = 0;
     memset(dce->imei, 0, sizeof(dce->imei));
     memset(dce->ip,   0, sizeof(dce->ip));
     // modem_init(pModem(dce));
 }
-void sim76xx_power_on(sim76xx_t *dce)
+/*
+ * Power sequencing — NON-BLOCKING.
+ * power_on/power_off/reset only arm a small state machine and return at once;
+ * sim76xx_poll() advances it using HAL ticks, so the main loop (and therefore
+ * tud_task) keeps running while the modem boots.
+ * sim76xx_start() called during the sequence is deferred until boot wait ends,
+ * so existing "power_on(); start();" call sites keep working unchanged.
+ */
+static void pwr_set_deadline(sim76xx_t *dce, uint32_t ms)
 {
-    log_info(TAG, "Power On");
+    dce->pwr_deadline = sx_gettick() + ms;
+}
+
+static uint8_t pwr_deadline_reached(sim76xx_t *dce)
+{
+    return ((int32_t)(sx_gettick() - dce->pwr_deadline) >= 0);
+}
+
+static void pwr_abort_modem_io(sim76xx_t *dce)
+{
+    modem_t *m = pModem(dce);
+    m->isBusy   = 0;
+    m->buff_id  = 0;
+    m->elapsed  = 0;
+    memset(m->buff, 0, MODEM_RX_BUFFER_SIZE);
+    s_urc_buf_id = 0;
+    dce->state  = SIM76XX_STATE_POWERING;
+}
+
+static void pwr_begin_on(sim76xx_t *dce)
+{
+    log_info(TAG, "Power On (async)");
+    pwr_abort_modem_io(dce);
     sx_gpio_write(&dce->base.powerPin, 0);
     sx_gpio_write(&dce->base.pwrPin, 1);
-    sx_delay_ms(50);
-    sx_gpio_write(&dce->base.pwrPin, 0);
-    sx_delay_ms(500);
-    sx_gpio_write(&dce->base.pwrPin, 1);
-    sx_delay_ms(8000);
-    // lte_uart_it_enable();
-    log_info(TAG, "Power On OK!");
-    
+    dce->pwr_step = SIM76XX_PWR_ON_SETTLE;
+    pwr_set_deadline(dce, SIM76XX_PWRKEY_SETTLE_MS);
 }
+
+static void pwr_begin_off(sim76xx_t *dce, uint8_t then_on)
+{
+    log_info(TAG, "Power Off (async)%s", then_on ? " + power on" : "");
+    pwr_abort_modem_io(dce);
+    dce->start_pending = 0;
+    dce->pwr_then_on   = then_on;
+    sx_gpio_write(&dce->base.pwrPin, 0);
+    dce->pwr_step = SIM76XX_PWR_OFF_PULSE;
+    pwr_set_deadline(dce, SIM76XX_PWROFF_PULSE_MS);
+}
+
+static void pwr_process(sim76xx_t *dce)
+{
+    if (!pwr_deadline_reached(dce)) return;
+
+    switch (dce->pwr_step) {
+    case SIM76XX_PWR_ON_SETTLE:
+        sx_gpio_write(&dce->base.pwrPin, 0);
+        dce->pwr_step = SIM76XX_PWR_ON_PULSE;
+        pwr_set_deadline(dce, SIM76XX_PWRKEY_PULSE_MS);
+        break;
+
+    case SIM76XX_PWR_ON_PULSE:
+        sx_gpio_write(&dce->base.pwrPin, 1);
+        dce->pwr_step = SIM76XX_PWR_ON_BOOT;
+        pwr_set_deadline(dce, SIM76XX_BOOT_WAIT_MS);
+        break;
+
+    case SIM76XX_PWR_ON_BOOT:
+        dce->pwr_step = SIM76XX_PWR_IDLE;
+        dce->state    = SIM76XX_STATE_IDLE;
+        sx_uart_flush(&dce->base.uart);          /* drop boot banner (RDY, +CPIN...) */
+        log_info(TAG, "Power On OK!");
+        if (dce->start_pending) {
+            dce->start_pending = 0;
+            sim76xx_start(dce);
+        }
+        break;
+
+    case SIM76XX_PWR_OFF_PULSE:
+        sx_gpio_write(&dce->base.powerPin, 1);   /* cut supply */
+        if (dce->pwr_then_on) {
+            dce->pwr_step = SIM76XX_PWR_OFF_GAP;
+            pwr_set_deadline(dce, SIM76XX_RESET_GAP_MS);
+        } else {
+            dce->pwr_step = SIM76XX_PWR_IDLE;
+            dce->state    = SIM76XX_STATE_IDLE;
+            log_info(TAG, "Power Off OK!");
+        }
+        break;
+
+    case SIM76XX_PWR_OFF_GAP:
+        dce->pwr_then_on = 0;
+        pwr_begin_on(dce);
+        break;
+
+    default:
+        dce->pwr_step = SIM76XX_PWR_IDLE;
+        break;
+    }
+}
+
+void sim76xx_power_on(sim76xx_t *dce)
+{
+    switch (dce->pwr_step) {
+    case SIM76XX_PWR_ON_SETTLE:
+    case SIM76XX_PWR_ON_PULSE:
+    case SIM76XX_PWR_ON_BOOT:
+        return;                     /* already powering on: a 2nd PWRKEY pulse would switch it OFF */
+    case SIM76XX_PWR_OFF_PULSE:
+    case SIM76XX_PWR_OFF_GAP:
+        dce->pwr_then_on = 1;       /* queue: power on when the off phase is done */
+        return;
+    default:
+        pwr_begin_on(dce);
+        return;
+    }
+}
+
 void sim76xx_power_off(sim76xx_t *dce)
 {
-    log_info(TAG, "Power Off!");
-    sx_gpio_write(&dce->base.pwrPin, 0);
-    sx_delay_ms(3200);
-    sx_gpio_write(&dce->base.powerPin, 1);
-    log_info(TAG, "Power Off OK!");
+    if (dce->pwr_step == SIM76XX_PWR_OFF_PULSE || dce->pwr_step == SIM76XX_PWR_OFF_GAP) {
+        dce->pwr_then_on   = 0;
+        dce->start_pending = 0;
+        return;
+    }
+    pwr_begin_off(dce, 0);
 }
-void sim76xx_reset(sim76xx_t *dce){
-    log_info(TAG, "SIM Reset — power cycle");
-    sim76xx_power_off(dce);
-    sx_delay_ms(3000);
-    sim76xx_power_on(dce);
+
+void sim76xx_reset(sim76xx_t *dce)
+{
+    log_info(TAG, "SIM Reset — power cycle (async)");
+    if (dce->pwr_step == SIM76XX_PWR_OFF_PULSE || dce->pwr_step == SIM76XX_PWR_OFF_GAP) {
+        dce->pwr_then_on   = 1;
+        dce->start_pending = 0;
+        return;
+    }
+    pwr_begin_off(dce, 1);
+}
+
+/* Busy-wait version, kept ONLY for entering STOP mode where the supply must be
+ * really off before the MCU sleeps and nobody polls the modem afterwards. */
+void sim76xx_power_off_blocking(sim76xx_t *dce)
+{
+    log_info(TAG, "Power Off (blocking)");
+    dce->pwr_step      = SIM76XX_PWR_IDLE;
+    dce->pwr_then_on   = 0;
+    dce->start_pending = 0;
+    dce->base.isBusy   = 0;
+    sx_gpio_write(&dce->base.pwrPin, 0);
+    sx_delay_ms(SIM76XX_PWROFF_PULSE_MS);
+    sx_gpio_write(&dce->base.powerPin, 1);
+    dce->state = SIM76XX_STATE_IDLE;
+    log_info(TAG, "Power Off OK!");
 }
 
 int sim76xx_start(sim76xx_t *dce){
+    if (dce->pwr_step != SIM76XX_PWR_IDLE) {
+        dce->start_pending = 1;
+        log_info(TAG, "start deferred until power sequence ends");
+        return 0;
+    }
     if(pModem(dce)->isBusy){
         log_warn(TAG, "start: modem busy");
         return -1;
@@ -229,6 +364,10 @@ int sim76xx_start(sim76xx_t *dce){
 
 void sim76xx_poll(sim76xx_t *dce, uint32_t ts){
 
+    if (dce->pwr_step != SIM76XX_PWR_IDLE) {
+        pwr_process(dce);
+        return;                       /* modem is off/booting: no AT, no URC */
+    }
     modem_poll(&dce->base, ts);
     if (dce->on_urc && !dce->base.isBusy) {
         int avail = sx_uart_available(&dce->base.uart);

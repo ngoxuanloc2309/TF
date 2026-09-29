@@ -32,7 +32,24 @@ typedef enum {
     SIM76XX_STATE_READY,
     SIM76XX_STATE_ERROR,
     SIM76XX_STATE_CGDCONT_QUERY,
+    SIM76XX_STATE_POWERING,      /* non-blocking power sequence in progress */
 } sim76xx_state_t;
+
+/*  Non-blocking power sequence (driven by sim76xx_poll)  */
+#define SIM76XX_PWRKEY_SETTLE_MS    50U
+#define SIM76XX_PWRKEY_PULSE_MS     500U
+#define SIM76XX_BOOT_WAIT_MS        8000U
+#define SIM76XX_PWROFF_PULSE_MS     3200U
+#define SIM76XX_RESET_GAP_MS        3000U
+
+typedef enum {
+    SIM76XX_PWR_IDLE = 0,
+    SIM76XX_PWR_ON_SETTLE,       /* PWRKEY high, settle        */
+    SIM76XX_PWR_ON_PULSE,        /* PWRKEY low                 */
+    SIM76XX_PWR_ON_BOOT,         /* PWRKEY high, modem booting */
+    SIM76XX_PWR_OFF_PULSE,       /* PWRKEY low, power down     */
+    SIM76XX_PWR_OFF_GAP,         /* supply cut, wait, then on  */
+} sim76xx_pwr_step_t;
 
 typedef struct sim76xx sim76xx_t;
 
@@ -49,6 +66,11 @@ struct sim76xx
 
     sim76xx_state_t state;
     uint8_t retry_count;
+
+    sim76xx_pwr_step_t pwr_step;
+    uint32_t pwr_deadline;       /* HAL tick */
+    uint8_t  pwr_then_on;        /* power on again after off (reset) */
+    uint8_t  start_pending;      /* run sim76xx_start() when boot wait ends */
 
     int rssi;
     int ber;
@@ -68,6 +90,12 @@ void sim76xx_init(sim76xx_t *dce);
 void sim76xx_power_on(sim76xx_t *dce);
 void sim76xx_power_off(sim76xx_t *dce);
 void sim76xx_reset(sim76xx_t *dce);
+/* Old behaviour (busy-wait). ONLY for the last step before STOP mode. */
+void sim76xx_power_off_blocking(sim76xx_t *dce);
+
+static inline uint8_t sim76xx_is_powering(sim76xx_t *dce){
+    return (dce->pwr_step != SIM76XX_PWR_IDLE);
+}
 
 int sim76xx_start(sim76xx_t *dce);
 void sim76xx_poll(sim76xx_t *dce, uint32_t ts);
