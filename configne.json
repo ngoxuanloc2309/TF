@@ -1,0 +1,1 @@
+{"apn":{"name":"m3-world","user":"mms","password":"mms"},"mqtt":{"host":"zenoh-staging.vindynamics.net","port":1883,"client_id":"tracker_001","user_name":"","password":""},"time_sleeps":300, "device_id": "synaptix_stm32_1"}

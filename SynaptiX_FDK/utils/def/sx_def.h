@@ -1,0 +1,13 @@
+#pragma once
+
+
+#define SX_PLATFORM_STM32H5 3
+#define SX_PLATFORM_STM32F1 1
+#define SX_PLATFORM_STM32F4 2
+#define SX_PLATFORM_STM32F7 4
+#define SX_PLATFORM_STM32H7 5
+
+#ifndef SX_USE_FREERTOS
+#define SX_USE_FREERTOS 0
+#endif
+
