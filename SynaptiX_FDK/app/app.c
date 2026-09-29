@@ -863,6 +863,50 @@ void app_init(void)
     return;
 }
 
+/* ---- Phase 0: observe BQ25622 VBUS_STAT (read-only, no action taken) ---- */
+#ifndef BQ_PHASE0_DEBUG
+#define BQ_PHASE0_DEBUG            1
+#endif
+#define BQ_PHASE0_READ_MS          500U    /* I2C read period            */
+#define BQ_PHASE0_HEARTBEAT_MS     5000U   /* print even if unchanged    */
+
+#if BQ_PHASE0_DEBUG
+static void bq_phase0_debug(uint32_t delta_ms)
+{
+    static uint32_t read_acc = 0, hb_acc = 0;
+    static int16_t  last_vbus = -1;         /* -1 = nothing printed yet   */
+    static uint8_t  last_err = 0;
+
+    read_acc += delta_ms;
+    hb_acc   += delta_ms;
+    if (read_acc < BQ_PHASE0_READ_MS)
+        return;
+    read_acc = 0;
+
+    bq25622_t *bq = &g_app.board->bq;
+
+    if (bq25622_read_status(bq) != 0) {
+        if (!last_err || hb_acc >= BQ_PHASE0_HEARTBEAT_MS) {
+            log_warn(TAG, "BQ VBUS_STAT read FAIL (I2C) - keep last=%d", (int)last_vbus);
+            hb_acc = 0;
+        }
+        last_err = 1;
+        return;
+    }
+    last_err = 0;
+
+    if (bq->vbus_stat != last_vbus || hb_acc >= BQ_PHASE0_HEARTBEAT_MS) {
+        log_info(TAG, "BQ VBUS_STAT=%u%u%u CHG_STAT=%u -> %s",
+                 (bq->vbus_stat >> 2) & 1, (bq->vbus_stat >> 1) & 1, bq->vbus_stat & 1,
+                 bq->chg_stat,
+                 bq->vbus_stat == BQ25622_VBUS_NONE ? "on battery" :
+                 bq->vbus_stat == BQ25622_VBUS_OTG  ? "OTG" : "VBUS present");
+        last_vbus = bq->vbus_stat;
+        hb_acc = 0;
+    }
+}
+#endif
+
 /*  Process  */
 void app_process(uint32_t timestamp)
 {
@@ -891,6 +935,9 @@ void app_process(uint32_t timestamp)
 
     read_vol_pin(timestamp);
     check_charge();
+#if BQ_PHASE0_DEBUG
+    bq_phase0_debug(timestamp);
+#endif
 
     switch (g_app.app_mode)
     {

@@ -27,6 +27,7 @@ COMPONENT_FILES = ${SYNAPTIX_DIR}/components/can/sx_can.c \
 				  $(SYNAPTIX_DIR)/components/sleep/sx_sleep.c \
 				  $(SYNAPTIX_DIR)/components/imu/bno055.c \
 				  $(SYNAPTIX_DIR)/components/rtc/sx_ex_rtc.c \
+				  $(SYNAPTIX_DIR)/components/bq25622/bq25622.c \
 
 SERVICES_FILES = ${SYNAPTIX_DIR}/services/logger/logger.c \
 				 ${SYNAPTIX_DIR}/services/littlefs/lfs.c \

@@ -143,6 +143,8 @@ void sx_board_init(void)
 
     // I2C
     sx_i2c_init(&board.i2c1, &sx_i2c_ops, &hi2c1);
+    // BQ25622 (read-only, Phase 0)
+    bq25622_init(&board.bq, &board.i2c1);
     // RTC
     sx_gpio_init(&s_rtc_pwr,   &sx_gpio_ops, &s_rtc_pwr_pin);
     rx8130ce_init(&board.rtc,  &board.i2c1, &s_rtc_pwr);

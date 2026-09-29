@@ -204,6 +204,7 @@ C_INCLUDES += -I$(SYNAPTIX_DIR)/app \
 		      -I$(SYNAPTIX_DIR)/components/sleep \
 			  -I$(SYNAPTIX_DIR)/components/imu \
 			  -I$(SYNAPTIX_DIR)/components/rtc \
+			  -I$(SYNAPTIX_DIR)/components/bq25622 \
 #USB tiny
 C_INCLUDES += -I$(USB_TINY_DIR)/src \
 			  -I$(USB_TINY_DIR)/src/common \

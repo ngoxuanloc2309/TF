@@ -25,6 +25,7 @@ extern "C" {
 #include "bno055.h"
 #include "sx_filter.h"
 #include "sx_read_bat.h"
+#include "bq25622.h"
 
 typedef struct {
     volatile uint32_t raw_adc;
@@ -45,6 +46,7 @@ typedef struct Board{
     rx8130ce_t  rtc;
     sx_i2c_t    rtc_i2c;
     bno055_t    imu;
+    bq25622_t   bq;
     sx_adc_reader_t s_adc_reader;
 }Board_t;
 
