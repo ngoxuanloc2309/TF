@@ -92,6 +92,36 @@ static void log_print(const char *str)
     sx_uart_write(&board.log_uart, (const uint8_t *)str, strlen(str));
 }
 
+/* ---- Phase 0 diagnostic: I2C1 scan (turn off with -DI2C_SCAN_DEBUG=0) ---- */
+#ifndef I2C_SCAN_DEBUG
+#define I2C_SCAN_DEBUG 1
+#endif
+#if I2C_SCAN_DEBUG
+static void i2c1_scan_debug(void)
+{
+    /* Idle levels: with pull-ups present and no device holding the bus, both must read 1. */
+    log_info(TAG, "I2C1 idle: SCL(PB6)=%d SDA(PB7)=%d (expect 1/1)",
+             (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6),
+             (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_7));
+
+    uint8_t found = 0;
+    for (uint8_t a = 0x08; a < 0x78; a++) {
+        if (sx_i2c_is_device_ready(&board.i2c1, (uint16_t)(a << 1), 1, 10) == 0) {
+            log_info(TAG, "I2C1 scan: ACK at 0x%02X%s", a,
+                     a == 0x6B ? "  <- BQ25622" :
+                     a == 0x32 ? "  <- RX8130CE" :
+                     (a == 0x28 || a == 0x29) ? "  <- BNO055" : "");
+            found++;
+        }
+    }
+    log_info(TAG, "I2C1 scan done: %u device(s)", found);
+    if (!board.bq.online) {
+        log_info(TAG, "BQ25622 retry init after scan...");
+        bq25622_init(&board.bq, &board.i2c1);
+    }
+}
+#endif
+
 void sx_board_init(void)
 {
     // Initialize Logger
@@ -166,6 +196,9 @@ void sx_board_init(void)
     bno055_power_on(&board.imu);
     sx_gpio_write(&s_imu_en, SX_GPIO_LOW);
     bno055_init(&board.imu, &board.i2c1, BNO055_I2C_ADDR_DEFAULT, &s_imu_en, &s_imu_reset);
+#if I2C_SCAN_DEBUG
+    i2c1_scan_debug();
+#endif
 
     HAL_ADCEx_Calibration_Start(hal_adc, ADC_SINGLE_ENDED);
     HAL_ADC_Start(hal_adc);

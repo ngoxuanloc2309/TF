@@ -29,7 +29,13 @@ extern "C" {
  * Datasheet: SLUSEG2D Rev. D.
  */
 
-#define BQ25622_I2C_ADDR                (0x6B << 1)     /* 7-bit 0x6B, HAL wants 8-bit */
+/* 7-bit address. Datasheet SLUSEG2D says 0x6B, but the v1.4 board scan only ACKs 0x6A
+ * (0x6B silent). 0x6A is a TEST value (chua xac nhan chip tai 0x6A la gi). Revert to 0x6B
+ * or fix once the real part on the schematic is known. */
+#ifndef BQ25622_I2C_ADDR7
+#define BQ25622_I2C_ADDR7               0x6A
+#endif
+#define BQ25622_I2C_ADDR                (BQ25622_I2C_ADDR7 << 1)   /* HAL wants 8-bit */
 #define BQ25622_I2C_MEMADD_8BIT         0x0001U         /* == I2C_MEMADD_SIZE_8BIT     */
 
 #define BQ25622_REG_ICHG                0x02            /* 16-bit, ICHG[11:6],  80 mA/step  */

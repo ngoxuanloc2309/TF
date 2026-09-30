@@ -205,7 +205,7 @@ static void gps_callback_task(sx_gps_t *gps, char *message, void *arg)
         {
             gps->altitude   = minmea_tofloat(&gga.altitude);
             gps->satellites = gga.satellites_tracked;
-            log_info(TAG, "GGA: alt=%.2f sat=%d", gps->altitude, gps->satellites);
+            log_debug(TAG, "GGA: alt=%.2f sat=%d", gps->altitude, gps->satellites);
         }
         else
         {

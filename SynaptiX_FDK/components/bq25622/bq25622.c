@@ -53,6 +53,16 @@ int bq25622_init(bq25622_t *dev, sx_i2c_t *i2c)
         log_error(TAG, "not found on I2C (addr 0x%02X)", BQ25622_I2C_ADDR >> 1);
         return -1;
     }
+
+    /* Diagnostic dump (read-only). If the chip at this address is NOT a BQ2562x these
+     * values are meaningless, so do not trust PN/VBUS_STAT below until they look sane. */
+    {
+        uint8_t s0 = 0xEE, s1 = 0xEE;
+        int e0 = reg_read8(dev, BQ25622_REG_CHARGER_STATUS_0, &s0);
+        int e1 = reg_read8(dev, BQ25622_REG_CHARGER_STATUS_1, &s1);
+        log_info(TAG, "raw @0x%02X: PART_INFO(0x38)=0x%02X STATUS0(0x1D)=0x%02X%s STATUS1(0x1E)=0x%02X%s",
+                 BQ25622_I2C_ADDR >> 1, pi, s0, e0 ? "(err)" : "", s1, e1 ? "(err)" : "");
+    }
     dev->online      = 1;
     dev->part_number = (pi & BQ25622_PN_MASK) >> BQ25622_PN_SHIFT;
     log_info(TAG, "found: PN=%u (%s) rev=%u", dev->part_number,

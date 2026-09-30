@@ -269,7 +269,7 @@ static void _on_message(const char *topic, const char *message)
 {
     if (!message || message[0] == '\0')
         return;
-    log_info(TAG, "SUB [%s] = %s", topic, message);
+    log_debug(TAG, "SUB [%s] = %s", topic, message);
 }
 
 static void _on_publish(int success)
