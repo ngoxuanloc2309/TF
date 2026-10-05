@@ -184,6 +184,7 @@ void sim76xx_init(sim76xx_t *dce)
     dce->pwr_deadline = 0;
     dce->pwr_then_on = 0;
     dce->start_pending = 0;
+    dce->boot_restarts = 0;
     memset(dce->imei, 0, sizeof(dce->imei));
     memset(dce->ip,   0, sizeof(dce->ip));
     // modem_init(pModem(dce));
@@ -217,10 +218,43 @@ static void pwr_abort_modem_io(sim76xx_t *dce)
     dce->state  = SIM76XX_STATE_POWERING;
 }
 
+/* Modem boot banner: A76xx prints "*ATREADY: 1", SIM7600 prints "SMS DONE"/"PB DONE".
+ * AT sent BEFORE this point is silently dropped by the modem. */
+static char    s_boot_buf[96];
+static uint8_t s_boot_len;
+
+static uint8_t has_boot_banner(const char *s)
+{
+    return (s != NULL) && (strstr(s, "ATREADY") || strstr(s, "SMS DONE") || strstr(s, "PB DONE"));
+}
+
+static uint8_t pwr_scan_banner(sim76xx_t *dce)
+{
+    int avail = sx_uart_available(&dce->base.uart);
+    while (avail > 0) {
+        uint8_t tmp[32];
+        int n = (avail > (int)sizeof(tmp)) ? (int)sizeof(tmp) : avail;
+        n = sx_uart_read(&dce->base.uart, tmp, n, 10);
+        if (n <= 0) break;
+        avail -= n;
+        for (int i = 0; i < n; i++) {
+            if (s_boot_len >= sizeof(s_boot_buf) - 1) {          /* rolling window */
+                memmove(s_boot_buf, s_boot_buf + sizeof(s_boot_buf) / 2, sizeof(s_boot_buf) / 2);
+                s_boot_len = sizeof(s_boot_buf) / 2 - 1;
+            }
+            s_boot_buf[s_boot_len++] = (char)tmp[i];
+        }
+        s_boot_buf[s_boot_len] = '\0';
+    }
+    return has_boot_banner(s_boot_buf);
+}
+
 static void pwr_begin_on(sim76xx_t *dce)
 {
     log_info(TAG, "Power On (async)");
     pwr_abort_modem_io(dce);
+    s_boot_len = 0;
+    s_boot_buf[0] = '\0';
     sx_gpio_write(&dce->base.powerPin, 0);
     sx_gpio_write(&dce->base.pwrPin, 1);
     dce->pwr_step = SIM76XX_PWR_ON_SETTLE;
@@ -240,6 +274,12 @@ static void pwr_begin_off(sim76xx_t *dce, uint8_t then_on)
 
 static void pwr_process(sim76xx_t *dce)
 {
+    if (dce->pwr_step == SIM76XX_PWR_ON_BOOT && pwr_scan_banner(dce)) {
+        log_info(TAG, "Boot banner seen");
+        dce->pwr_step = SIM76XX_PWR_ON_BANNER;
+        pwr_set_deadline(dce, SIM76XX_BANNER_SETTLE_MS);
+        return;
+    }
     if (!pwr_deadline_reached(dce)) return;
 
     switch (dce->pwr_step) {
@@ -252,10 +292,13 @@ static void pwr_process(sim76xx_t *dce)
     case SIM76XX_PWR_ON_PULSE:
         sx_gpio_write(&dce->base.pwrPin, 1);
         dce->pwr_step = SIM76XX_PWR_ON_BOOT;
-        pwr_set_deadline(dce, SIM76XX_BOOT_WAIT_MS);
+        pwr_set_deadline(dce, SIM76XX_BOOT_MAX_MS);
         break;
 
-    case SIM76XX_PWR_ON_BOOT:
+    case SIM76XX_PWR_ON_BOOT:       /* timeout: no banner (URC disabled?) — go on anyway */
+        log_warn(TAG, "No boot banner within %u ms — continuing", (unsigned)SIM76XX_BOOT_MAX_MS);
+        /* fall through */
+    case SIM76XX_PWR_ON_BANNER:
         dce->pwr_step = SIM76XX_PWR_IDLE;
         dce->state    = SIM76XX_STATE_IDLE;
         sx_uart_flush(&dce->base.uart);          /* drop boot banner (RDY, +CPIN...) */
@@ -357,6 +400,7 @@ int sim76xx_start(sim76xx_t *dce){
     
     dce->state = SIM76XX_STATE_AT;
     dce->retry_count = 0;
+    dce->boot_restarts = 0;
     send_cmd(dce, CMD_AT, cb_at, SIM76XX_TIMEOUT_AT);
     // log_debug(TAG, "Callback at cmd");
     return 0;
@@ -428,8 +472,19 @@ static void cb_at(modem_t *modem, const char *response, modem_response_st_t res,
     sim76xx_t *dce = pDCE(arg);
     if (res == MODEM_RESPONSE_SUCCESS) {
         dce->retry_count = 0;
+        dce->boot_restarts = 0;
         dce->state = SIM76XX_STATE_CGSN;
         send_cmd(dce, CMD_CGSN, cb_cgsn, SIM76XX_TIMEOUT_AT);
+        return;
+    }
+    if (has_boot_banner(modem->buff) && dce->boot_restarts < SIM76XX_MAX_BOOT_RESTARTS) {
+        /* The modem was still booting when AT went out (banner arrived during the wait):
+         * resend without burning a retry. Capped so a modem stuck in a reset loop still escalates. */
+        dce->boot_restarts++;
+        log_warn(TAG, "modem still booting — resend AT (%u/%u, not counted)",
+                 dce->boot_restarts, (unsigned)SIM76XX_MAX_BOOT_RESTARTS);
+        dce->state = SIM76XX_STATE_AT;
+        send_cmd(dce, CMD_AT, cb_at, SIM76XX_TIMEOUT_AT);
         return;
     }
     dce->retry_count++;

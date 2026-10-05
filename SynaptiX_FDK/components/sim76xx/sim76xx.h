@@ -38,7 +38,9 @@ typedef enum {
 /*  Non-blocking power sequence (driven by sim76xx_poll)  */
 #define SIM76XX_PWRKEY_SETTLE_MS    50U
 #define SIM76XX_PWRKEY_PULSE_MS     500U
-#define SIM76XX_BOOT_WAIT_MS        8000U
+#define SIM76XX_BOOT_MAX_MS         15000U  /* max wait for the boot banner after PWRKEY pulse */
+#define SIM76XX_BANNER_SETTLE_MS    1000U   /* extra wait after the banner, lets URCs finish   */
+#define SIM76XX_MAX_BOOT_RESTARTS   5U      /* AT resends allowed while the modem is still booting */
 #define SIM76XX_PWROFF_PULSE_MS     3200U
 #define SIM76XX_RESET_GAP_MS        3000U
 
@@ -46,7 +48,8 @@ typedef enum {
     SIM76XX_PWR_IDLE = 0,
     SIM76XX_PWR_ON_SETTLE,       /* PWRKEY high, settle        */
     SIM76XX_PWR_ON_PULSE,        /* PWRKEY low                 */
-    SIM76XX_PWR_ON_BOOT,         /* PWRKEY high, modem booting */
+    SIM76XX_PWR_ON_BOOT,         /* PWRKEY high, waiting for boot banner (*ATREADY / SMS DONE / PB DONE) */
+    SIM76XX_PWR_ON_BANNER,       /* banner seen, short settle before the first AT */
     SIM76XX_PWR_OFF_PULSE,       /* PWRKEY low, power down     */
     SIM76XX_PWR_OFF_GAP,         /* supply cut, wait, then on  */
 } sim76xx_pwr_step_t;
@@ -71,6 +74,7 @@ struct sim76xx
     uint32_t pwr_deadline;       /* HAL tick */
     uint8_t  pwr_then_on;        /* power on again after off (reset) */
     uint8_t  start_pending;      /* run sim76xx_start() when boot wait ends */
+    uint8_t  boot_restarts;      /* AT retries not counted because modem was still booting */
 
     int rssi;
     int ber;

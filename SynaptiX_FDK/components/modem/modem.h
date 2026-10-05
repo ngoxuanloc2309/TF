@@ -27,6 +27,7 @@ typedef struct modem_command{
     const char *res_fail;
     modem_command_response_callback_t callback;
     void *arg; // callback
+    uint8_t fail_on_cme; // 1: also treat "+CME ERROR" as immediate FAIL (opt-in, default 0)
 }modem_command_t;
 
 struct modem

@@ -51,7 +51,8 @@ void modem_poll(modem_t *modem, uint32_t timeStamp){
                     modem->cmd->callback(modem, modem->buff, MODEM_RESPONSE_SUCCESS, modem->cmd->arg);
                 return;
             }
-            else if(modem->cmd->res_fail && strstr(modem->buff, modem->cmd->res_fail)){
+            else if((modem->cmd->res_fail && strstr(modem->buff, modem->cmd->res_fail)) ||
+                    (modem->cmd->fail_on_cme && strstr(modem->buff, "+CME ERROR"))){
                 modem->isBusy = 0;
                 modem->elapsed = 0;
                 log_debug(TAG, "Command fail: [%s]", modem->buff);
