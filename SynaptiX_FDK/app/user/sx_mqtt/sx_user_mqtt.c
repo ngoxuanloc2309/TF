@@ -142,6 +142,8 @@ static void _on_publish(sx_mqtt_t *mqtt, int success)
             cqueue_init_static(&s_queue, s_queue_buf, MQTT_QUEUE_SIZE,
                                sizeof(mqtt_queue_item_t));
             if (s_on_publish) s_on_publish(0);
+            s_mqtt.state = SX_MQTT_STATE_DISCONNECTED;   /* session is dead, reconnect after modem is ready */
+            if (s_on_disconnected) s_on_disconnected();
             sim76xx_start(&board.sim76xx);
             return;
         }
@@ -171,6 +173,15 @@ static void _on_modem_ready(sim76xx_t *dce){
     log_info(TAG, "Modem ready — IP=%s RSSI=%d client_id=%s",
              sim76xx_get_ip(&board.sim76xx), sim76xx_get_rssi(&board.sim76xx), s_client_id_buf);
     //sx_delay_ms(2000);
+
+    /* The modem has just finished (re)initialising, so any MQTT session it had is gone.
+     * If s_mqtt.state is still CONNECTED (e.g. after "Max retry — restart modem"),
+     * sx_mqtt_connect() refuses with "already connected or in progress" and we keep
+     * publishing on a dead session until the whole board is reset. */
+    if (s_mqtt.state != SX_MQTT_STATE_DISCONNECTED) {
+        log_warn(TAG, "Modem re-initialised — MQTT state %d -> DISCONNECTED", (int)s_mqtt.state);
+        s_mqtt.state = SX_MQTT_STATE_DISCONNECTED;
+    }
     sx_mqtt_connect(&s_mqtt);
     log_info(TAG, "Modem ready — IP=%s RSSI=%d", sim76xx_get_ip(&board.sim76xx), sim76xx_get_rssi(&board.sim76xx));
 }

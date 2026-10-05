@@ -426,6 +426,26 @@ void sim76xx_poll(sim76xx_t *dce, uint32_t ts){
                 s_urc_buf_id += n;
                 s_urc_buf[s_urc_buf_id] = '\0';
 
+                /* DIAG: while no MQTT RX message is being reassembled, log every complete
+                 * unsolicited line (e.g. *ATREADY, +CMQTTCONNLOST, +CGEV, +CPSMSTATUS) and
+                 * drop it from the buffer. Previously these were swallowed silently. */
+                if (!strstr(s_urc_buf, "+CMQTTRXSTART")) {
+                    char *start = s_urc_buf;
+                    char *nl;
+                    while ((nl = strchr(start, '\n')) != NULL) {
+                        *nl = '\0';
+                        char *e = nl;
+                        while (e > start && (e[-1] == '\r')) { *--e = '\0'; }
+                        if (e > start) log_warn(TAG, "URC: %s", start);
+                        start = nl + 1;
+                    }
+                    if (start != s_urc_buf) {
+                        size_t rest = strlen(start);
+                        memmove(s_urc_buf, start, rest + 1);
+                        s_urc_buf_id = rest;
+                    }
+                }
+
                 if (strstr(s_urc_buf, "+CMQTTRXEND:")) {
                     dce->on_urc(dce, s_urc_buf);
                     s_urc_buf_id = 0;
@@ -875,7 +895,7 @@ static void cb_sub_done(modem_t *modem, const char *response, modem_response_st_
 static void cb_pub_topic_prompt(modem_t *modem, const char *response, modem_response_st_t res, void *arg){
     sim76xx_t *dce = pDCE(arg);
     if (res != MODEM_RESPONSE_SUCCESS) {
-        log_error(TAG, "MQTT pub: CMQTTTOPIC failed");
+        log_error(TAG, "MQTT pub: CMQTTTOPIC failed res=%d(1=FAIL,2=TIMEOUT) response=[%s]", res, response ? response : "NULL");
         if (s_pub_final_cb) s_pub_final_cb(modem, response, res, dce);
         return;
     }
@@ -897,7 +917,7 @@ static void cb_pub_topic_sent(modem_t *modem, const char *response, modem_respon
 static void cb_pub_payload_prompt(modem_t *modem, const char *response, modem_response_st_t res, void *arg){
     sim76xx_t *dce = pDCE(arg);
     if (res != MODEM_RESPONSE_SUCCESS) {
-        log_error(TAG, "MQTT pub: CMQTTPAYLOAD failed");
+        log_error(TAG, "MQTT pub: CMQTTPAYLOAD failed res=%d(1=FAIL,2=TIMEOUT) response=[%s]", res, response ? response : "NULL");
         if (s_pub_final_cb) s_pub_final_cb(modem, response, res, dce);
         return;
     }

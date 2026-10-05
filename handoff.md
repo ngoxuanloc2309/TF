@@ -5,7 +5,7 @@ MCU: STM32H563 (HAL, Makefile, arm-none-eabi-gcc). Framework nội bộ: `Synapt
 Tài liệu tham chiếu: datasheet BQ25620/BQ25622 (SLUSEG2D Rev. D). Số trang là số trang trong file PDF, có thể lệch vài trang so với số in ở chân trang.
 Repo tham khảo (weather station, không có chân cắt nguồn nên tắt module bằng lệnh phần mềm): https://github.com/logan123synaptix/WS_v1.git
 
-**Trạng thái: mới thiết kế, chưa có dòng code v1.4 nào. Chưa test trên board.** Không có file patch nào; mọi thứ bên dưới là kế hoạch.
+**Trạng thái (cập nhật 05/10/2026):** Phase 0 đã chạy được trên board (đọc được chip nguồn qua I2C). Phần sleep/wake (Phase 1–6) vẫn là kế hoạch, chưa có code. Cùng phiên này đã debug và sửa chuỗi SIM76xx/MQTT/publish (xem **mục 11**). **Chip nguồn trên board không phải BQ25622 như giả định (xem mục 7a).** Chưa đo nguồn modem, chưa test sleep trên board.
 
 ---
 
@@ -107,6 +107,15 @@ Nguyên tắc: **ngoại vi theo nhu cầu.** Khi sleep thì DeInit hết và c�
 - Kiểm chứng trước khi code (gửi tay, lúc SIM đã đăng ký mạng): `AT+CGMM`, `AT+CTZU=1`, `AT+CCLK?`.
 - Thứ tự nguồn giờ đề xuất: NITZ ưu tiên, GPS dự phòng. Ghi RTC ngoài cần `acquire` I2C1.
 
+## 7a. Chip nguồn thực tế trên board (phát hiện khi test Phase 0)
+
+- Scan I2C1 chỉ thấy `0x29` (BNO055), `0x32` (RX8130CE), `0x6A`. **Không có `0x6B`**, nên driver ở `0x6B` báo `not found`.
+- Datasheet BQ25620/BQ25622 (SLUSEG2D): địa chỉ 7-bit `0x6B`. Tra datasheet thì **BQ25628/BQ25628E/BQ25629 dùng `0x6A`**, cùng dải thanh ghi 0x02–0x38. Nhiều khả năng đây là chip trên board, **nhưng chưa xác nhận** (cần mã in trên IC/schematic).
+- Đã đổi driver sang `0x6A` (macro `BQ25622_I2C_ADDR7` trong `bq25622.h`, có thể override bằng `-D`). Log boot: `raw @0x6A: PART_INFO(0x38)=0x12 STATUS0(0x1D)=0x11 STATUS1(0x1E)=0x04`, driver báo `PN=2 (unknown) rev=2` (driver chỉ biết PN 0 = BQ25620, 1 = BQ25622). Ý nghĩa PN=2 **chưa đối chiếu datasheet**.
+- `VBUS_STAT=100b` (4) khi cắm USB. Theo bảng 8-2 datasheet BQ25629 (dò D+/D-), giá trị này là "unknown 5-V adapter", IINDPM = **500 mA**. BQ25628 không có dò D+/D-, nên chưa rõ bảng này áp dụng cho chip nào. Cần xác nhận part trước.
+- **Không chạy hàm ghi BQ (Phase 5/6: `config_apply`, cắt xả, `battery_disconnect`) cho đến khi đã đối chiếu register map của đúng part.** Toàn bộ bảng mục 7 là của BQ25622 và có thể sai bit/giá trị với BQ25628/29.
+- `READ_BAT` (ADC MCU, `services/read_bat`) đọc ~0.73 V: pin gần như không nối hoặc chia áp sai. Board đang chạy chỉ bằng USB. `CHG_STAT` nhảy 0/1/2 khi không có pin (chưa xác nhận nguyên nhân).
+
 ## 7. Kiến thức từ datasheet BQ25622 (từ handoff cũ, chưa xác nhận lại bit-level)
 
 | Mục | Nội dung |
@@ -128,7 +137,7 @@ Nguyên tắc: **ngoại vi theo nhu cầu.** Khi sleep thì DeInit hết và c�
 
 ## 8. Kế hoạch phase (mỗi phase test độc lập trên board)
 
-- **Phase 0 — Đọc BQ25622:** thêm `bq25622.c` vào build, gọi `bq25622_init()` sau I2C1, in `VBUS_STAT` trong main loop. Test: cắm/rút USB thì log đổi `000` ↔ `100`.
+- **Phase 0 — Đọc BQ (ĐÃ XONG phần đọc):** `bq25622.c` đã vào build, đọc được ở `0x6A`, log `BQ VBUS_STAT=100 CHG_STAT=0 -> VBUS present`. **Còn lại:** chưa test rút USB (`000`) và chưa xác nhận part (mục 7a).
 - **Phase 1 — SIM76xx có giờ mạng:** thêm `AT+CTZU=1`, `AT+CCLK?`, parse UTC, hàm lấy giờ. Điều kiện: kết quả kiểm chứng trên board ở mục 6.
 - **Phase 2 — Cắt/bật nguồn flash và IMU:** điền `sx_storage_sleep/wake`, hàm nguồn IMU, DeInit SPI/I2C, xử lý CS/`IMU_RESET`. Test: cắt flash, đo dòng, bật lại đọc JEDEC ID, ghi/đọc thử. **Test rủi ro số 1:** cắt IMU xong có còn đọc được BQ qua I2C không (IMU mất nguồn có thể kéo SDA/SCL qua diode bảo vệ). Nếu lỗi thì dùng SUSPEND cho IMU thay vì cắt nguồn.
 - **Phase 3 — Quản lý ngoại vi theo nhu cầu + vòng wake-fake:** lớp `acquire/release`, vòng STOP → I2C1 → đọc `VBUS_STAT` → wake-real hoặc ngủ tiếp, `time_check_vbus`, sửa thứ tự `SX_RESUME_TICS()`/`SystemClock_Config()`, sửa bug `sleep_requested`.
@@ -146,6 +155,8 @@ Phase 3 phụ thuộc Phase 2; Phase 4 phụ thuộc 1–3; Phase 5 và 6 độc
 4. **Model SIM thật** (`AT+CGMM`) và kết quả `AT+CCLK?` (mục 6).
 5. **Host USB suspend** (`tud_suspend_cb`) trong khi VBUS còn: code cũ vẫn đưa vào sleep (như v1.2). Quyết định giữ hay chỉ sleep khi VBUS=0.
 6. Mục "log" trong danh sách bật ngoại vi ở chu kỳ publish: đang hiểu là UART log debug (chưa xác nhận).
+7. **Part number thật của chip nguồn** (BQ25628/BQ25628E/BQ25629/khác) và nơi dò USB D+/D- (có nối hay để hở).
+8. **Nguồn cho modem:** pin có nối không, USB dùng cổng PC hay adapter; nguyên nhân modem reset (mục 11.4).
 
 ## 10. Kế hoạch test trên board
 
@@ -158,3 +169,58 @@ Phase 3 phụ thuộc Phase 2; Phase 4 phụ thuộc 1–3; Phase 5 và 6 độc
 - Ghi log flash trong chu kỳ publish rồi tắt lại nhiều lần liên tiếp.
 - Đo dòng ngủ trung bình với các `time_check_vbus` khác nhau. Con số ước tính ~5 µA ở chu kỳ 10 s **chưa đo**.
 - Cắt xả ở ngưỡng đã chọn; kiểm tra tự khởi động lại khi cắm adapter.
+---
+
+## 11. Phiên debug SIM76xx / MQTT / publish (05/10/2026)
+
+Mọi file bên dưới là bản đầy đủ đã present. Bản gốc lấy từ repo (nhánh hiện tại); nếu người dùng có sửa local khác thì cần gộp lại.
+
+### 11.1 Các lỗi đã tìm ra và sửa
+
+| # | Triệu chứng | Nguyên nhân | Sửa | File | Trạng thái |
+|---|---|---|---|---|---|
+| 1 | `AT+COPS=0` → `+CME ERROR: unknown error`, báo TIMEOUT | Gửi lệnh khi modem chưa xong init SIM (URC `*ATREADY`, `+CPIN: READY`, `SMS DONE` đến sau). `res_fail` chỉ khớp `\r\nERROR\r\n`, không khớp `+CME ERROR` | Thêm bước `AT+CPIN?` poll (1.5 s, tối đa 15 lần, rồi power-cycle) trước `COPS`. Trường `fail_on_cme` (opt-in, mặc định 0, chỉ bật cho `CPIN`/`COPS?`/`COPS=0`) để `+CME ERROR` báo lỗi ngay. `COPS=0` lỗi thì nghỉ 2 s retry, 3 lần thì power-cycle. Trì hoãn retry không chặn (field `defer_action`) | `modem.c/.h`, `sim76xx.c/.h` | Đã vào repo (commit "fail") |
+| 2 | Publish lỗi, log luôn `Publish fail 1/3`, không bao giờ restart | `s_publish_retry = 0;` ở đầu `_on_publish`, trước `++` | Bỏ dòng reset; chỉ reset khi thành công. Retry mà `sx_mqtt_publish` trả `< 0` thì tính là một lần fail. `s_publishing` không còn kẹt khi gửi không đi được | `sx_user_mqtt.c` | Đã vào repo |
+| 3 | Spam GSM+GPS mỗi vòng lặp | `config_json.s_time_publish` không có mặc định (static = 0), `TIME_PUBLISH_FULL_PW_MODE_MS` (60000) không được dùng; `config.json` không có `time_publish` | Mặc định `.s_time_publish = TIME_PUBLISH_FULL_PW_MODE_MS`; thêm `"time_publish": 60` (giây) vào `config.json` | `app.c`, `config.json` | Đã giao; log cho thấy hoạt động theo chu kỳ |
+| 4 | Muốn publish ngay khi vừa connect MQTT rồi mới theo `time_publish` | — | Cờ `first_pub_pending` (đặt trong `_on_connected` của app). Chờ `sim76xx.base.isBusy == 0` (lệnh subscribe có thể còn chạy) rồi gửi GSM+GPS một lần; cờ chỉ xóa khi publish được nhận | `app.c` | Đã giao; log cho thấy gửi ngay sau `subscribe OK` |
+| 5 | Sau `Max retry — restart modem` vẫn không publish được, chỉ reset cả mạch mới được | `sx_mqtt_connect()` từ chối (`connect: already connected or in progress`) vì `s_mqtt.state` vẫn CONNECTED sau khi modem init lại; `sim76xx_start` chỉ chạy lại init AT, không power-cycle modem | Trong `_on_modem_ready`: nếu state khác DISCONNECTED thì đặt về DISCONNECTED rồi `sx_mqtt_connect`. Nhánh `Max retry`: đặt state DISCONNECTED và gọi `s_on_disconnected` trước `sim76xx_start`. Luồng `cb_start` đã có sẵn nhánh STOP+START khi `CMQTTSTART` lỗi | `mqtt_restart_fix/sx_user_mqtt.c` | **Đã giao, người dùng CHƯA nạp** |
+
+### 11.2 Chẩn đoán đã thêm (cần xác nhận người dùng đã nạp)
+
+- `sim76xx.c` (`urc_diag/`): lỗi `CMQTTTOPIC`/`CMQTTPAYLOAD` in `res=` (1 FAIL, 2 TIMEOUT) và phản hồi thô (**đã nạp**: log có `res=1 ... response=[...]`). Thêm log mọi dòng URC không mong đợi lúc modem rảnh (`URC: ...`): trước đó `sim76xx_poll` gom các dòng này vào `s_urc_buf` và chỉ xóa khi gặp `+CMQTTRXEND`, không bao giờ in. **Chưa rõ người dùng đã nạp phần URC này.**
+
+### 11.3 Điều đã hiểu về luồng
+
+- "Restart modem" sau publish fail = `sim76xx_start()` (gửi lại `AT`, `CGSN`, `CPIN`, `COPS`, `CSQ`, `CGATT`...). **Không power-cycle.** Power-cycle (`SIM Reset — power cycle`) chỉ khi `AT` lỗi liên tiếp 3 lần, hoặc SIM không ready sau 15 lần poll, hoặc `COPS=0` lỗi 3 lần.
+- `modem_send_command` trả `-1` khi modem đang bận, nên publish trùng lúc modem bận sẽ bị bỏ (`publish not sent, dropped`).
+- `SX_MQTT_TIMEOUT_PUB` = 3000 ms áp dụng cho từng bước publish (QoS 1, `CMQTTPUB=0,1,60,0`). `MQTT_KEEPALIVE` = 60 s (`app_config.h`).
+- `sim76xx_psm_enable/disable` có trong code nhưng **không được gọi ở đâu**.
+- Module dòng A76xx (URC `*ATREADY`, `*ISIMAID`, `+CCIOTOPTI`, `+CGEV`); model chính xác vẫn chưa xác nhận (`AT+CGMM`).
+
+### 11.4 Vấn đề còn MỞ: publish lỗi theo chu kỳ, chưa rõ nguyên nhân gốc
+
+Quan sát:
+- SIM Viettel ổn. SIM Vina (APN `m3-world`, user/pass `mms`, có IP, RSSI 24–27) publish được 1–2 lần rồi lỗi.
+- **`time_publish = 10` thì chạy liên tục; `= 60` thì lỗi** (người dùng quan sát). Nghĩa là lỗi liên quan khoảng rảnh giữa các lần gửi.
+- Hai kiểu lỗi đã thấy: (a) `AT+CMQTTPUB` trả `OK` nhưng không có URC `+CMQTTPUB: 0,0` (timeout), sau đó banner `*ATREADY ... +CPIN: READY` xuất hiện **mà không có `SMS DONE`** (modem có vẻ reset); (b) `AT+CMQTTTOPIC` trả `ERROR` rõ ràng, không banner (modem sống, phiên MQTT mất).
+- Khi `Max retry`, `COPS=0` ở lần init lại vẫn có thể trả `+CME ERROR` (đã xử lý bằng #1).
+
+Giả thuyết (**tất cả chưa xác nhận**):
+1. Timeout 3 s quá ngắn sau khi kênh vô tuyến rảnh (gói đầu cần resume radio, chờ PUBACK).
+2. PSM/tự reset của modem khi rảnh (cài đặt PSM có thể được lưu trong modem). Banner `*ATREADY` là manh mối.
+3. NAT/idle timeout của nhà mạng cắt phiên TCP (keepalive 60 s = đúng bằng chu kỳ publish).
+4. Nguồn: IINDPM 500 mA + không có pin (mục 7a) có thể làm modem sụt áp khi phát sóng. Khó khớp với việc `time_publish = 10` ổn, nhưng chưa loại trừ.
+
+Bước kiểm chứng đề xuất (chưa thực hiện):
+- Nạp `mqtt_restart_fix/sx_user_mqtt.c` + `urc_diag/sim76xx.c`, chạy `time_publish: 60` đến khi lỗi, đọc các dòng `URC:` trước lỗi (`*ATREADY`, `+CPSMSTATUS`, `+CMQTTCONNLOST`...).
+- Qua cổng AT (USB CDC, `TEST_AT_USB`): `AT+CPSMS?` (nếu `1` thì thử `AT+CPSMS=0`), `AT+CGMM`.
+- Thử `SX_MQTT_TIMEOUT_PUB` = 10000 ms; thử giảm `MQTT_KEEPALIVE` xuống 20–30 s.
+- Lắp pin Li-ion đã sạc, hoặc dùng adapter ≥ 2 A; đo VBAT/VSYS của modem lúc `CMQTTPUB` nếu có oscilloscope.
+- Nếu muốn, thêm nhận biết `*ATREADY` lúc đang chạy = modem reset, rồi tự reconnect MQTT ngay thay vì chờ 3 lần timeout (chưa làm).
+
+### 11.5 Việc nên làm tiếp theo (đề xuất thứ tự)
+
+1. Người dùng nạp `mqtt_restart_fix/sx_user_mqtt.c`, `urc_diag/sim76xx.c` và gửi log lỗi (mục 11.4).
+2. Xác nhận part number chip nguồn, rồi mới đối chiếu register map của đúng part (Phase 5/6 phụ thuộc điều này).
+3. Quyết định xử lý nguồn/pin cho modem.
+4. Quay lại Phase 1–6 (sleep/wake theo nhu cầu). Lưu ý các thay đổi ở mục 11 liên quan `sx_user_mqtt`/`sim76xx_start` nên được giữ nguyên khi sửa luồng sleep (đặc biệt: sau khi tắt SIM bằng PWRKEY phải reset `s_mqtt.state`, giống mục 5 phần WS_v1).
