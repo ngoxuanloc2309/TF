@@ -9,6 +9,15 @@
 
 static const char *TAG = "SX_STORAGE";
 
+#ifndef STORAGE_PWR_DEBUG
+#define STORAGE_PWR_DEBUG 1            /* step-by-step log of the power sequence; set 0 once it is stable */
+#endif
+#if STORAGE_PWR_DEBUG
+#define PWR_STEP(...) log_info(TAG, __VA_ARGS__)
+#else
+#define PWR_STEP(...) do {} while (0)
+#endif
+
 static sx_W25Q128_t     s_w25q128;
 static sx_ext_flash_t   s_flash;
 static bool             s_initialized = false;
@@ -230,8 +239,11 @@ void sx_storage_sleep(void)
 {
     if (!s_initialized || !s_powered || s_cfg == NULL) return;
 
+    PWR_STEP("sleep: wait WIP + rail off");
     sx_W25Q128_power_down(&s_w25q128);          /* waits for WIP, then rail off */
+    PWR_STEP("sleep: SPI1 DeInit");
     HAL_SPI_DeInit(s_cfg->hspi);
+    PWR_STEP("sleep: CS low");
     sx_gpio_write(&s_cfg->s_cs, SX_GPIO_LOW);
     s_powered = false;
     log_info(TAG, "Flash powered off");
@@ -244,8 +256,10 @@ sx_storage_err_t sx_storage_wake(void)
     if (!s_initialized || s_cfg == NULL) return SX_STORAGE_ERR_NOT_INIT;
     if (s_powered) return SX_STORAGE_OK;
 
+    PWR_STEP("wake: rail on");
     sx_W25Q128_power_up(&s_w25q128);            /* rail on + 10 ms */
 
+    PWR_STEP("wake: SPI1 Init");
     if (HAL_SPI_Init(s_cfg->hspi) != HAL_OK) {
         log_error(TAG, "SPI1 re-init failed");
         sx_gpio_write(&s_w25q128.power, SX_GPIO_HIGH);
@@ -253,6 +267,7 @@ sx_storage_err_t sx_storage_wake(void)
     }
     sx_gpio_write(&s_cfg->s_cs, SX_GPIO_HIGH);
 
+    PWR_STEP("wake: probe (release power-down + JEDEC)");
     if (!sx_W25Q128_probe(&s_w25q128)) {
         log_error(TAG, "Flash did not answer after power-up");
         HAL_SPI_DeInit(s_cfg->hspi);

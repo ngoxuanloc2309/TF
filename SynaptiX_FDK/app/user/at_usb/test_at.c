@@ -129,6 +129,10 @@ static int _at_flashpwr_set(AT_Command_t *cmd, const char *param)
     int v = _parse01(param);
     if (v < 0) { _respond(AT_RESP_ERROR); return -1; }
 
+    /* Answer first: if the sequence below misbehaves, the terminal has still seen the command arrive. */
+    _respondf("+FLASHPWR: going %s", v ? "on" : "off");
+    log_info(TAG, "FLASHPWR=%d: start", v);
+
     if (v == 0) {
         sx_storage_sleep();
     } else if (sx_storage_wake() != SX_STORAGE_OK) {
@@ -136,6 +140,7 @@ static int _at_flashpwr_set(AT_Command_t *cmd, const char *param)
         _respond(AT_RESP_ERROR);
         return -1;
     }
+    log_info(TAG, "FLASHPWR=%d: done", v);
     _respondf("+FLASHPWR: %d", sx_storage_is_powered() ? 1 : 0);
     _respond(AT_RESP_OK);
     return 0;
