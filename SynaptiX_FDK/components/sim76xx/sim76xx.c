@@ -788,8 +788,11 @@ static void cb_netopen(modem_t *modem, const char *response, modem_response_st_t
 
 static void cb_ipaddr(modem_t *modem, const char *response, modem_response_st_t res, void *arg){
     sim76xx_t *dce = pDCE(arg);
-    if (res == MODEM_RESPONSE_SUCCESS && response) {
-        const char *p = strstr(response, "+IPADDR:");
+    /* On TIMEOUT the modem layer passes response == NULL although "+IPADDR: x.x.x.x" may already be in
+     * modem->buff (seen when the final "OK" is not matched) — parse from the raw buffer in that case. */
+    const char *ipsrc = response ? response : modem->buff;
+    if (ipsrc && ipsrc[0]) {
+        const char *p = strstr(ipsrc, "+IPADDR:");
         if (p) {
             p += 8;
             while (*p == ' ') p++;
@@ -881,7 +884,7 @@ static int parse_cclk_utc(const char *resp, int *year, int64_t *utc, int *tz_q)
 
     if (mo < 1 || mo > 12 || dd < 1 || dd > 31 || hh > 23 || mi > 59 || ss > 60 || tz < -96 || tz > 96) return 0;
 
-    int y = 2000 + yy;
+    int y = (yy >= 70) ? (1900 + yy) : (2000 + yy);   /* unsynced modem clock reports 70/01/01 = 1970 */
     int64_t local = (int64_t)days_from_civil(y, mo, dd) * 86400 + hh * 3600 + mi * 60 + ss;
     *year = y;
     *tz_q = tz;
