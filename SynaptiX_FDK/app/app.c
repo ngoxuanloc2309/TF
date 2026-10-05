@@ -26,6 +26,7 @@ typedef struct TrackingApp
 
     uint32_t publish_elapsed;
     uint8_t subscribed ;
+    uint8_t first_pub_pending;   /* publish once right after MQTT (re)connect, then follow time_publish */
     uint8_t last_publish_done;
     uint8_t enter_sleep_published;
     uint8_t mqtt_stopped;
@@ -94,7 +95,10 @@ typedef struct
     uint32_t s_time_publish;
 }config_json_t;
 
-static config_json_t config_json;
+/* s_time_publish must have a non-zero default: if config.json has no "time_publish"
+ * key, a value of 0 makes the FULL_POWER publish condition always true, so GSM/GPS
+ * are published on every loop iteration (log spam). */
+static config_json_t config_json = { .s_time_publish = TIME_PUBLISH_FULL_PW_MODE_MS };
 
 static void set_time_exrtc(uint8_t sec, uint8_t min, uint8_t hour, uint8_t week, uint8_t day, uint8_t month, uint8_t year){
     g_app.time.sec = sec; 
@@ -252,6 +256,7 @@ static void _on_connected(void)
 {
     log_info(TAG, "MQTT connected");
     g_app.subscribed = 0;
+    g_app.first_pub_pending = 1;
 }
 
 static void _on_disconnected(void)
@@ -828,6 +833,7 @@ void app_init(void)
     g_app.app_mode = APP_MODE_FULL_POWER;
     g_app.publish_elapsed = 0;
     g_app.subscribed = 0;
+    g_app.first_pub_pending = 0;
     g_app.last_publish_done = 0;
     g_app.enter_sleep_published = 0;
     g_app.mqtt_stopped = 0;
@@ -957,6 +963,21 @@ void app_process(uint32_t timestamp)
             g_app.subscribed = 1;
             sx_user_mqtt_subscribe(MQTT_SUB_TOPIC);
             g_app.publish_elapsed = 0;
+            break;
+        }
+
+        /* First publish right after (re)connect. Wait until the modem is idle
+         * (the subscribe command may still be in flight) and no publish is running,
+         * then send GSM + GPS once. The periodic timer below takes over afterwards. */
+        if (g_app.first_pub_pending && !sx_user_mqtt_is_publishing() &&
+            !g_app.board->sim76xx.base.isBusy)
+        {
+            publish_gsm("full pw");
+            publish_gps("full pw");
+            if (sx_user_mqtt_is_publishing()) {   /* accepted by the modem */
+                g_app.first_pub_pending = 0;
+                g_app.publish_elapsed = 0;
+            }
             break;
         }
 

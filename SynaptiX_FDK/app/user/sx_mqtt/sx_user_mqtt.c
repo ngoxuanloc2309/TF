@@ -43,7 +43,10 @@ static void dispatch_next(void){
     if (!cqueue_is_empty(&s_queue) && sx_mqtt_is_connected(&s_mqtt)) {
         if (cqueue_receive(&s_queue, &s_current_item)) {
             s_publishing = 1;
-            sx_mqtt_publish(&s_mqtt, s_current_item.topic, s_current_item.message, 1, 0);
+            if (sx_mqtt_publish(&s_mqtt, s_current_item.topic, s_current_item.message, 1, 0) < 0) {
+                s_publishing = 0;   /* no callback will fire — avoid a permanent stuck flag */
+                log_warn(TAG, "publish not sent, dropped: %s", s_current_item.topic);
+            }
         }
     }
 }
@@ -123,8 +126,10 @@ static void _on_message(sx_mqtt_t *mqtt, const char *topic, const char *message)
 static void _on_publish(sx_mqtt_t *mqtt, int success)
 {
     (void)mqtt;
-    s_publishing = 0;           
-    s_publish_retry = 0;
+    s_publishing = 0;
+    /* NOTE: do NOT reset s_publish_retry here — it is reset only on success.
+     * Resetting it before the increment below made every failure read "1/3",
+     * so MQTT_PUBLISH_MAX_RETRY was never reached and the modem never restarted. */
 
     log_debug(TAG, "Publish %s", success ? "OK" : "FAIL");
 
@@ -141,13 +146,18 @@ static void _on_publish(sx_mqtt_t *mqtt, int success)
             return;
         }
         s_publishing = 1;
-        sx_mqtt_publish(&s_mqtt, s_current_item.topic,
-                        s_current_item.message, 1, 0);
+        if (sx_mqtt_publish(&s_mqtt, s_current_item.topic,
+                            s_current_item.message, 1, 0) < 0) {
+            /* not sent (modem not ready / not connected): no callback will come,
+             * so count it as another failure. Recursion is bounded by MAX_RETRY. */
+            _on_publish(mqtt, 0);
+        }
         return;
     }
 
-    dispatch_next();                    
-    if (s_on_publish) s_on_publish(1);  
+    s_publish_retry = 0;
+    dispatch_next();
+    if (s_on_publish) s_on_publish(1);
 }
 
 static void _on_modem_ready(sim76xx_t *dce){
@@ -274,7 +284,10 @@ void sx_user_mqtt_publish(const char *topic, const char *message){
     if (!s_publishing) {
         if (cqueue_receive(&s_queue, &s_current_item)) {
             s_publishing = 1;
-            sx_mqtt_publish(&s_mqtt, s_current_item.topic, s_current_item.message, 1, 0);
+            if (sx_mqtt_publish(&s_mqtt, s_current_item.topic, s_current_item.message, 1, 0) < 0) {
+                s_publishing = 0;   /* no callback will fire — avoid a permanent stuck flag */
+                log_warn(TAG, "publish not sent, dropped: %s", s_current_item.topic);
+            }
         }
     }
 }
