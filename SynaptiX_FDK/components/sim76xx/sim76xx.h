@@ -100,6 +100,7 @@ struct sim76xx
     uint8_t  clk_valid;          /* 1 = CCLK? parsed and looks plausible */
     int16_t  clk_tz_q;           /* time zone in quarters of an hour (as reported by CCLK?) */
     uint32_t clk_utc;            /* unix seconds, UTC (valid only if clk_valid) */
+    uint32_t clk_tick;           /* sx_gettick() (ms) when clk_utc was read, to age the snapshot */
 
     sim76xx_on_ready_cb_t on_ready;
     sim76xx_on_error_cb_t on_error;
@@ -146,6 +147,9 @@ static inline uint8_t sim76xx_get_utc(sim76xx_t *dce, uint32_t *utc){
     if (utc) *utc = dce->clk_utc;
     return 1;
 }
+
+/* Like sim76xx_get_utc() but adds the time elapsed since CCLK? was read (ms tick). */
+uint8_t sim76xx_get_utc_now(sim76xx_t *dce, uint32_t *utc);
 
 static inline const char *sim76xx_get_model(sim76xx_t *dce){
     return dce->model;

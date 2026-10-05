@@ -200,6 +200,7 @@ void sim76xx_init(sim76xx_t *dce)
     dce->clk_valid = 0;
     dce->clk_tz_q  = 0;
     dce->clk_utc   = 0;
+    dce->clk_tick  = 0;
     // modem_init(pModem(dce));
 }
 /*
@@ -397,6 +398,13 @@ void sim76xx_power_off_blocking(sim76xx_t *dce)
     sx_gpio_write(&dce->base.powerPin, 1);
     dce->state = SIM76XX_STATE_IDLE;
     log_info(TAG, "Power Off OK!");
+}
+
+uint8_t sim76xx_get_utc_now(sim76xx_t *dce, uint32_t *utc)
+{
+    if (!dce->clk_valid) return 0;
+    if (utc) *utc = dce->clk_utc + (uint32_t)((sx_gettick() - dce->clk_tick) / 1000U);
+    return 1;
 }
 
 int sim76xx_start(sim76xx_t *dce){
@@ -1000,6 +1008,7 @@ static void cb_tp_cclk(modem_t *modem, const char *response, modem_response_st_t
             dce->clk_valid = 1;
             dce->clk_tz_q  = (int16_t)tz_q;
             dce->clk_utc   = (uint32_t)utc;
+            dce->clk_tick  = sx_gettick();
             log_info(TAG, "TIME valid (year %d >= %d)", year, SIM76XX_CLK_MIN_YEAR);
         } else {
             log_warn(TAG, "TIME NOT valid: year %d < %d (modem clock probably not synced by network yet)",

@@ -13,6 +13,7 @@
 #include "cJSON.h"
 #include "bno055.h"
 #include "test_at.h"
+#include <time.h>
 
 static const char *TAG = "App";
 
@@ -100,15 +101,105 @@ typedef struct
  * are published on every loop iteration (log spam). */
 static config_json_t config_json = { .s_time_publish = TIME_PUBLISH_FULL_PW_MODE_MS };
 
-static void set_time_exrtc(uint8_t sec, uint8_t min, uint8_t hour, uint8_t week, uint8_t day, uint8_t month, uint8_t year){
-    g_app.time.sec = sec; 
-    g_app.time.min = min;
-    g_app.time.hour = hour;
-    g_app.time.week = week;
-    g_app.time.day = day;
-    g_app.time.month = month;
-    g_app.time.year = year;
-    rx8130ce_set_time(&board.rtc, &g_app.time);
+/* ======================================================================
+ *  External RTC (RX8130CE)
+ *
+ *  - RTC holds Vietnam local time = UTC + APP_RTC_TZ_OFFSET_S (same zone as gps.c, which adds +7 h).
+ *  - rx8130ce_time_t.month is 1..12 (driver rejects 0). struct tm uses tm_mon 0..11: convert at the edges.
+ *    (Old code stored tm_mon 0..11 directly: January was rejected and every other month was off by one.)
+ *  - week is a one-hot bitmask (RX8130CE_WEEK_xxx), not a number.
+ *  - Sources: network time (AT+CCLK?) and GPS RMC (only with a valid fix). Last one wins.
+ * ====================================================================== */
+#define APP_RTC_TZ_OFFSET_S     (7 * 3600)
+#define APP_RTC_MIN_YEAR        2024
+#define APP_RTC_MAX_YEAR        2099
+
+/* days since 1970-01-01 for a civil date; linear in d, so tm_mday overflow (32) normalises itself */
+static int32_t rtc_days_from_civil(int y, int m, int d)
+{
+    y -= (m <= 2);
+    int32_t era = (y >= 0 ? y : y - 399) / 400;
+    int32_t yoe = y - era * 400;
+    int32_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int32_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+static int64_t rtc_tm_to_secs(const struct tm *t)
+{
+    return (int64_t)rtc_days_from_civil(t->tm_year + 1900, t->tm_mon + 1, t->tm_mday) * 86400
+         + t->tm_hour * 3600 + t->tm_min * 60 + t->tm_sec;
+}
+
+/* Write "local seconds since 1970" into the RTC. Returns RX8130CE_OK or an RX8130CE_ERR_* code. */
+static int rtc_set_local_secs(int64_t local)
+{
+    int64_t days = local / 86400;
+    int32_t rem  = (int32_t)(local % 86400);
+    if (rem < 0) { rem += 86400; days--; }
+
+    int64_t z   = days + 719468;
+    int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    int32_t doe = (int32_t)(z - era * 146097);
+    int32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    int32_t mp  = (5 * doy + 2) / 153;
+    int     d   = doy - (153 * mp + 2) / 5 + 1;
+    int     m   = mp < 10 ? mp + 3 : mp - 9;
+    int     y   = (int)(yoe + era * 400) + (m <= 2);
+
+    if (y < APP_RTC_MIN_YEAR || y > APP_RTC_MAX_YEAR) return RX8130CE_ERR_PARAM;
+
+    int wday = (int)(((days % 7) + 11) % 7);   /* 1970-01-01 = Thursday; 0 = Sunday */
+
+    rx8130ce_time_t r;
+    r.sec   = (uint8_t)(rem % 60);
+    r.min   = (uint8_t)((rem / 60) % 60);
+    r.hour  = (uint8_t)(rem / 3600);
+    r.week  = (uint8_t)(1U << wday);
+    r.day   = (uint8_t)d;
+    r.month = (uint8_t)m;                       /* 1..12 */
+    r.year  = (uint8_t)(y - 2000);
+
+    int rc = rx8130ce_set_time(&board.rtc, &r);
+    if (rc == RX8130CE_OK) g_app.time = r;
+    return rc;
+}
+
+/* GPS -> RTC. gps->tim stays stale after an invalid RMC, so require a fix. */
+static void rtc_sync_from_gps(void)
+{
+    sx_gps_t *gps = &g_app.board->gps;
+    if (gps->latitude == 0.0f || gps->longtitude == 0.0f) return;
+    if (gps->tim.tm_mday < 1) return;
+    /* gps->tim is already UTC+7 (gps.c); mday may be 32 at month end, rtc_tm_to_secs() normalises it */
+    int rc = rtc_set_local_secs(rtc_tm_to_secs(&gps->tim));
+    if (rc != RX8130CE_OK) log_warn(TAG, "RTC sync from GPS failed (rc=%d)", rc);
+}
+
+/* Network time (sim76xx) -> RTC. Called every loop; each new CCLK sample is applied once. */
+static void app_sync_rtc_from_modem(void)
+{
+    static uint32_t s_applied_snap = 0;
+    static uint8_t  s_tries = 0;
+    sim76xx_t *m = &g_app.board->sim76xx;
+    uint32_t utc;
+
+    if (!m->clk_valid || m->clk_utc == s_applied_snap) return;
+    if (!sim76xx_get_utc_now(m, &utc)) return;
+
+    int rc = rtc_set_local_secs((int64_t)utc + APP_RTC_TZ_OFFSET_S);
+    if (rc == RX8130CE_OK) {
+        s_applied_snap = m->clk_utc;
+        s_tries = 0;
+        log_info(TAG, "RTC synced from network time: %02d:%02d:%02d %02d/%02d/20%02d (UTC+7)",
+                 g_app.time.hour, g_app.time.min, g_app.time.sec,
+                 g_app.time.day, g_app.time.month, g_app.time.year);
+    } else if (++s_tries >= 3) {
+        log_warn(TAG, "RTC sync from network time failed (rc=%d) - giving up on this sample", rc);
+        s_applied_snap = m->clk_utc;
+        s_tries = 0;
+    }
 }
 
 static void get_time_exrtc(void){
@@ -147,7 +238,7 @@ static void write_gps_log(const char *event)
                  sim76xx_get_rssi(&g_app.board->sim76xx),
                  gps->altitude, gps->speed, gps->satellites,
                  g_app.time.hour, g_app.time.min, g_app.time.sec,
-                 g_app.time.day,  g_app.time.month+1, g_app.time.year);
+                 g_app.time.day,  g_app.time.month, g_app.time.year);
     }
     else
     {
@@ -156,7 +247,7 @@ static void write_gps_log(const char *event)
                  event,
                  sim76xx_get_rssi(&g_app.board->sim76xx),
                  g_app.time.hour, g_app.time.min, g_app.time.sec,
-                 g_app.time.day,  g_app.time.month+1, g_app.time.year);
+                 g_app.time.day,  g_app.time.month, g_app.time.year);
     }
 
     sx_storage_delete(GPS_LOG_FILE_PATH);
@@ -334,7 +425,7 @@ static void publish_gsm(char *mode)
              sim76xx_get_imei(&g_app.board->sim76xx),
              sim76xx_get_apn(&g_app.board->sim76xx), g_app.board->voltage.v_bat,
              g_app.time.hour, g_app.time.min, g_app.time.sec,
-             g_app.time.day, g_app.time.month+1, g_app.time.year);
+             g_app.time.day, g_app.time.month, g_app.time.year);
 
     sx_user_mqtt_publish(topic, msg);
     log_info(TAG, "GSM: %s", msg);
@@ -360,7 +451,7 @@ static void publish_gsm(char *mode)
 //                  "\"time\":\"%02d:%02d:%02d\",\"date\":\"%02d/%02d/20%02d\"}",
 //                  mode, gps->latitude, gps->longtitude, g_app.board->voltage.v_bat,
 //                  g_app.time.hour, g_app.time.min, g_app.time.sec,
-//                  g_app.time.day, g_app.time.month+1, g_app.time.year);
+//                  g_app.time.day, g_app.time.month, g_app.time.year);
 //     } else {
 //         read_last_gps();
 //         snprintf(msg, sizeof(msg),
@@ -368,7 +459,7 @@ static void publish_gsm(char *mode)
 //                  "\"time\":\"%02d:%02d:%02d\",\"date\":\"%02d/%02d/20%02d\"}",
 //                  mode, g_app.last_lat, g_app.last_lon, g_app.board->voltage.v_bat,
 //                  g_app.time.hour, g_app.time.min, g_app.time.sec,
-//                  g_app.time.day, g_app.time.month+1, g_app.time.year);
+//                  g_app.time.day, g_app.time.month, g_app.time.year);
 //     }
 //     sx_user_mqtt_publish(topic, msg);
 //     log_info(TAG, "GPS: %s", msg);
@@ -383,7 +474,7 @@ static void publish_gps(char *mode)
     struct tm t = {0};
     rx8130ce_get_time(&g_app.board->rtc, &g_app.time);
     t.tm_year = g_app.time.year + 100;  
-    t.tm_mon  = g_app.time.month;
+    t.tm_mon  = (g_app.time.month >= 1) ? (g_app.time.month - 1) : 0;   /* RTC 1..12 -> tm_mon 0..11 */
     t.tm_mday = g_app.time.day;
     t.tm_hour = g_app.time.hour;
     t.tm_min  = g_app.time.min;
@@ -402,9 +493,7 @@ static void publish_gps(char *mode)
         spd = gps->speed;
         sat = gps->satellites;
         fix = 1; 
-        set_time_exrtc(board.gps.tim.tm_sec, board.gps.tim.tm_min, board.gps.tim.tm_hour,
-                       (board.gps.tim.tm_mday / 7 + 1), board.gps.tim.tm_mday,
-                       board.gps.tim.tm_mon, board.gps.tim.tm_year - 100);
+        rtc_sync_from_gps();
     }
     else
     {
@@ -939,6 +1028,7 @@ void app_process(uint32_t timestamp)
         }
     }
 
+    app_sync_rtc_from_modem();   /* network time (CCLK?) -> external RTC, once per new sample */
     read_vol_pin(timestamp);
     check_charge();
 #if BQ_PHASE0_DEBUG
@@ -1097,8 +1187,7 @@ void app_process(uint32_t timestamp)
             g_app.sleep_mgr.published = 1;
             g_app.last_publish_done   = 0;
             g_app.publish_count       = 0;
-            set_time_exrtc(board.gps.tim.tm_sec, board.gps.tim.tm_min, board.gps.tim.tm_hour, (board.gps.tim.tm_mday / 7 +1), board.gps.tim.tm_mday,
-                            board.gps.tim.tm_mon, board.gps.tim.tm_year - 100);
+            rtc_sync_from_gps();
             publish_gsm("wake up");
             publish_gps("wake up");
         }
@@ -1106,8 +1195,7 @@ void app_process(uint32_t timestamp)
         if (g_app.sleep_mgr.published && g_app.last_publish_done)
         {
             write_gps_log("enter_sleep");
-            set_time_exrtc(board.gps.tim.tm_sec, board.gps.tim.tm_min, board.gps.tim.tm_hour, (board.gps.tim.tm_mday / 7 +1), board.gps.tim.tm_mday,
-                            board.gps.tim.tm_mon, board.gps.tim.tm_year - 100);
+            rtc_sync_from_gps();
             g_app.last_publish_done = 0;
             g_app.publish_count = 0;
             g_app.app_mode = APP_MODE_SLEEP;
