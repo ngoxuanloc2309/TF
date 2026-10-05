@@ -95,6 +95,14 @@ static void cb_sub_done        (modem_t *modem, const char *response, modem_resp
 
 
 static void map_operator_to_apn(sim76xx_t *dce, const char *mccmnc);
+#if SIM76XX_TIME_PROBE
+static void time_probe_start(sim76xx_t *dce);
+static void cb_tp_cgmm     (modem_t *modem, const char *response, modem_response_st_t res, void *arg);
+static void cb_tp_ctzu_test(modem_t *modem, const char *response, modem_response_st_t res, void *arg);
+static void cb_tp_ctzu_set (modem_t *modem, const char *response, modem_response_st_t res, void *arg);
+static void cb_tp_ctzu_q   (modem_t *modem, const char *response, modem_response_st_t res, void *arg);
+static void cb_tp_cclk     (modem_t *modem, const char *response, modem_response_st_t res, void *arg);
+#endif
 
 /*  Helper  */
 static void send_cmd(sim76xx_t *dce, int idx, modem_command_response_callback_t cb, uint32_t timeout_ms)
@@ -119,6 +127,7 @@ static void send_dynamic(sim76xx_t *dce, const char *cmd_str, const char *res_su
     command[CMD_DYNAMIC].res_fail      = "\r\nERROR\r\n";
     command[CMD_DYNAMIC].callback      = cb;
     command[CMD_DYNAMIC].arg           = dce;
+    command[CMD_DYNAMIC].fail_on_cme   = 0;
     log_debug(TAG, "CMD : %s", cmd_str);
     modem_send_command(m, &command[CMD_DYNAMIC], timeout_ms);
 }
@@ -187,6 +196,10 @@ void sim76xx_init(sim76xx_t *dce)
     dce->boot_restarts = 0;
     memset(dce->imei, 0, sizeof(dce->imei));
     memset(dce->ip,   0, sizeof(dce->ip));
+    memset(dce->model, 0, sizeof(dce->model));
+    dce->clk_valid = 0;
+    dce->clk_tz_q  = 0;
+    dce->clk_utc   = 0;
     // modem_init(pModem(dce));
 }
 /*
@@ -790,9 +803,221 @@ static void cb_ipaddr(modem_t *modem, const char *response, modem_response_st_t 
     }
     /* whether you have an IP address or not, it will still switch to READY. */
     log_info(TAG, "Network ready - IP: %s", dce->ip);
+#if SIM76XX_TIME_PROBE
+    time_probe_start(dce);          /* CGMM / CTZU / CCLK, then continues with CGDCONT? */
+#else
     dce->state       = SIM76XX_STATE_CGDCONT_QUERY;
     send_cmd(dce, CMD_CGDCONT_QUERY, cb_cgdcont_query, SIM76XX_TIMEOUT_AT);
+#endif
 }
+
+#if SIM76XX_TIME_PROBE
+/* ======================================================================
+ *  Phase 1 — network time (NITZ) probe
+ *  AT+CGMM -> AT+CTZU=? -> AT+CTZU=1 -> AT+CTZU? -> AT+CCLK?
+ *  Result is logged ("TIME ..." lines) and, if CCLK? looks valid, stored in
+ *  dce->clk_utc (unix seconds, UTC). Nothing here is fatal: any FAIL/TIMEOUT is
+ *  logged and the init flow continues to CGDCONT? / READY.
+ *  CCLK? returns LOCAL time + zone in quarters of an hour (manual 3.2.10),
+ *  so UTC = local - zz*15 min.
+ * ====================================================================== */
+
+/* ---- pure helpers (no HW access) : PROBE_HELPERS_BEGIN ---- */
+static int cclk_num2(const char **pp, int *out)
+{
+    const char *p = *pp;
+    if (p[0] < '0' || p[0] > '9' || p[1] < '0' || p[1] > '9') return 0;
+    *out = (p[0] - '0') * 10 + (p[1] - '0');
+    *pp = p + 2;
+    return 1;
+}
+
+/* days since 1970-01-01 for a civil date (proleptic Gregorian) */
+static int32_t days_from_civil(int y, int m, int d)
+{
+    y -= (m <= 2);
+    int32_t era = (y >= 0 ? y : y - 399) / 400;
+    int32_t yoe = y - era * 400;
+    int32_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int32_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+static void civil_from_days(int32_t z, int *y, int *m, int *d)
+{
+    z += 719468;
+    int32_t era = (z >= 0 ? z : z - 146096) / 146097;
+    int32_t doe = z - era * 146097;
+    int32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    int32_t mp  = (5 * doy + 2) / 153;
+    *d = doy - (153 * mp + 2) / 5 + 1;
+    *m = mp < 10 ? mp + 3 : mp - 9;
+    *y = yoe + era * 400 + (*m <= 2);
+}
+
+/* Parse   +CCLK: "yy/MM/dd,hh:mm:ss+zz"   -> unix seconds UTC and zone (quarters).
+ * Returns 1 if the string was parsed (range-checked); plausibility (year) is checked by the caller. */
+static int parse_cclk_utc(const char *resp, int *year, int64_t *utc, int *tz_q)
+{
+    int yy, mo, dd, hh, mi, ss, tz;
+    char sign;
+    if (!resp) return 0;
+    const char *p = strstr(resp, "+CCLK:");
+    if (!p) return 0;
+    p = strchr(p, '"');
+    if (!p) return 0;
+    p++;
+    if (!cclk_num2(&p, &yy) || *p++ != '/') return 0;
+    if (!cclk_num2(&p, &mo) || *p++ != '/') return 0;
+    if (!cclk_num2(&p, &dd) || *p++ != ',') return 0;
+    if (!cclk_num2(&p, &hh) || *p++ != ':') return 0;
+    if (!cclk_num2(&p, &mi) || *p++ != ':') return 0;
+    if (!cclk_num2(&p, &ss)) return 0;
+    sign = *p++;
+    if (sign != '+' && sign != '-') return 0;
+    if (!cclk_num2(&p, &tz)) return 0;
+    if (sign == '-') tz = -tz;
+
+    if (mo < 1 || mo > 12 || dd < 1 || dd > 31 || hh > 23 || mi > 59 || ss > 60 || tz < -96 || tz > 96) return 0;
+
+    int y = 2000 + yy;
+    int64_t local = (int64_t)days_from_civil(y, mo, dd) * 86400 + hh * 3600 + mi * 60 + ss;
+    *year = y;
+    *tz_q = tz;
+    *utc  = local - (int64_t)tz * 900;
+    return 1;
+}
+
+/* Copy the first non-empty line after the echoed command (e.g. the answer of AT+CGMM). */
+static void first_line_after_echo(const char *resp, const char *echo, char *out, size_t n)
+{
+    out[0] = '\0';
+    if (!resp || n == 0) return;
+    const char *p = strstr(resp, echo);
+    if (p) {
+        p = strstr(p, "\r\n");
+        if (p) p += 2;
+    } else {
+        p = resp;
+    }
+    while (p && (*p == '\r' || *p == '\n')) p++;
+    size_t i = 0;
+    while (p && i < n - 1 && *p && *p != '\r' && *p != '\n') out[i++] = *p++;
+    out[i] = '\0';
+}
+/* ---- PROBE_HELPERS_END ---- */
+
+static void log_probe(const char *cmd, modem_response_st_t res, const char *resp)
+{
+    char line[112];
+    size_t n = 0;
+    int sp = 1;
+    const char *r = resp ? resp : "";
+    for (; *r && n < sizeof(line) - 1; r++) {
+        char ch = *r;
+        if (ch == '\r' || ch == '\n') ch = ' ';
+        if (ch == ' ' && sp) continue;      /* collapse blanks, drop leading */
+        sp = (ch == ' ');
+        line[n++] = ch;
+    }
+    line[n] = '\0';
+    log_info(TAG, "TIME %s -> %s | %s", cmd,
+             res == MODEM_RESPONSE_SUCCESS ? "OK" : (res == MODEM_RESPONSE_FAIL ? "FAIL" : "TIMEOUT"),
+             line);
+}
+
+/* Like send_dynamic(), but "+CME ERROR" ends the command at once (otherwise an unsupported
+ * command would just sit until the 9 s timeout). */
+static void send_probe(sim76xx_t *dce, const char *cmd_str, modem_command_response_callback_t cb)
+{
+    modem_t *m = pModem(dce);
+    memset(m->buff, 0x00, MODEM_RX_BUFFER_SIZE);
+    command[CMD_DYNAMIC].cmd           = cmd_str;
+    command[CMD_DYNAMIC].res_success   = "\r\nOK\r\n";
+    command[CMD_DYNAMIC].res_fail      = "\r\nERROR\r\n";
+    command[CMD_DYNAMIC].callback      = cb;
+    command[CMD_DYNAMIC].arg           = dce;
+    command[CMD_DYNAMIC].fail_on_cme   = 1;
+    log_debug(TAG, "CMD : %s", cmd_str);
+    modem_send_command(m, &command[CMD_DYNAMIC], SIM76XX_TIMEOUT_TIME);
+}
+
+static void cb_tp_cgmm(modem_t *modem, const char *response, modem_response_st_t res, void *arg)
+{
+    sim76xx_t *dce = pDCE(arg);
+    if (res == MODEM_RESPONSE_SUCCESS && response) {
+        first_line_after_echo(response, "AT+CGMM", dce->model, sizeof(dce->model));
+        log_info(TAG, "TIME model (CGMM): %s", dce->model[0] ? dce->model : "(empty)");
+    } else {
+        log_probe("AT+CGMM", res, modem->buff);
+    }
+    send_probe(dce, "AT+CTZU=?\r\n", cb_tp_ctzu_test);
+}
+
+static void cb_tp_ctzu_test(modem_t *modem, const char *response, modem_response_st_t res, void *arg)
+{
+    sim76xx_t *dce = pDCE(arg);
+    log_probe("AT+CTZU=?", res, response ? response : modem->buff);
+    send_probe(dce, "AT+CTZU=1\r\n", cb_tp_ctzu_set);
+}
+
+static void cb_tp_ctzu_set(modem_t *modem, const char *response, modem_response_st_t res, void *arg)
+{
+    sim76xx_t *dce = pDCE(arg);
+    log_probe("AT+CTZU=1", res, response ? response : modem->buff);
+    send_probe(dce, "AT+CTZU?\r\n", cb_tp_ctzu_q);
+}
+
+static void cb_tp_ctzu_q(modem_t *modem, const char *response, modem_response_st_t res, void *arg)
+{
+    sim76xx_t *dce = pDCE(arg);
+    log_probe("AT+CTZU?", res, response ? response : modem->buff);
+    send_probe(dce, "AT+CCLK?\r\n", cb_tp_cclk);
+}
+
+static void cb_tp_cclk(modem_t *modem, const char *response, modem_response_st_t res, void *arg)
+{
+    sim76xx_t *dce = pDCE(arg);
+    int year = 0, tz_q = 0;
+    int64_t utc = 0;
+
+    dce->clk_valid = 0;
+    log_probe("AT+CCLK?", res, response ? response : modem->buff);
+
+    if (res == MODEM_RESPONSE_SUCCESS && parse_cclk_utc(response, &year, &utc, &tz_q)) {
+        int uy, um, ud;
+        int32_t days = (int32_t)(utc / 86400);
+        int32_t secs = (int32_t)(utc % 86400);
+        if (secs < 0) { secs += 86400; days--; }
+        civil_from_days(days, &uy, &um, &ud);
+        log_info(TAG, "TIME parsed: zone=%d quarters (offset %d min) -> UTC %04d-%02d-%02d %02d:%02d:%02d (unix %lu)",
+                 tz_q, tz_q * 15, uy, um, ud, secs / 3600, (secs % 3600) / 60, secs % 60, (unsigned long)utc);
+        if (year >= SIM76XX_CLK_MIN_YEAR && utc > 0) {
+            dce->clk_valid = 1;
+            dce->clk_tz_q  = (int16_t)tz_q;
+            dce->clk_utc   = (uint32_t)utc;
+            log_info(TAG, "TIME valid (year %d >= %d)", year, SIM76XX_CLK_MIN_YEAR);
+        } else {
+            log_warn(TAG, "TIME NOT valid: year %d < %d (modem clock probably not synced by network yet)",
+                     year, SIM76XX_CLK_MIN_YEAR);
+        }
+    } else if (res == MODEM_RESPONSE_SUCCESS) {
+        log_warn(TAG, "TIME: could not parse +CCLK line");
+    }
+
+    dce->state = SIM76XX_STATE_CGDCONT_QUERY;
+    send_cmd(dce, CMD_CGDCONT_QUERY, cb_cgdcont_query, SIM76XX_TIMEOUT_AT);
+}
+
+static void time_probe_start(sim76xx_t *dce)
+{
+    dce->state = SIM76XX_STATE_TIME_PROBE;
+    dce->clk_valid = 0;
+    log_info(TAG, "TIME probe start (CGMM, CTZU, CCLK)");
+    send_probe(dce, "AT+CGMM\r\n", cb_tp_cgmm);
+}
+#endif /* SIM76XX_TIME_PROBE */
 
 /*  MQTT API    */
 int sim76xx_mqtt_start(sim76xx_t *dce, modem_command_response_callback_t cb, uint32_t timeout_ms){

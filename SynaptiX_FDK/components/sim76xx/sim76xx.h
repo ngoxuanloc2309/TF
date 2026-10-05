@@ -14,6 +14,15 @@ extern "C" {
 #define SIM76XX_TIMEOUT_NETOPEN     10000U
 #define SIM76XX_TIMEOUT_CFUN        15000U 
 
+/*  Phase 1: network time (NITZ) probe, runs once per init, right before READY.
+ *  Every step is non-fatal: any error/timeout is logged and the flow carries on.
+ *  Set to 0 to compile it out. */
+#ifndef SIM76XX_TIME_PROBE
+#define SIM76XX_TIME_PROBE          1
+#endif
+#define SIM76XX_TIMEOUT_TIME        9000U   /* manual: max response time of CTZU / CCLK = 9000 ms */
+#define SIM76XX_CLK_MIN_YEAR        2024    /* plausibility check only: manual does not say what CCLK? returns when unsynced */
+
 /*  Init state machine  */
 typedef enum {
     SIM76XX_STATE_IDLE = 0,
@@ -33,6 +42,7 @@ typedef enum {
     SIM76XX_STATE_ERROR,
     SIM76XX_STATE_CGDCONT_QUERY,
     SIM76XX_STATE_POWERING,      /* non-blocking power sequence in progress */
+    SIM76XX_STATE_TIME_PROBE,    /* Phase 1: CGMM / CTZU / CCLK probe */
 } sim76xx_state_t;
 
 /*  Non-blocking power sequence (driven by sim76xx_poll)  */
@@ -85,6 +95,12 @@ struct sim76xx
     char username[32];
     char password[32];
 
+    /* Phase 1: module model and network time */
+    char     model[24];          /* AT+CGMM answer */
+    uint8_t  clk_valid;          /* 1 = CCLK? parsed and looks plausible */
+    int16_t  clk_tz_q;           /* time zone in quarters of an hour (as reported by CCLK?) */
+    uint32_t clk_utc;            /* unix seconds, UTC (valid only if clk_valid) */
+
     sim76xx_on_ready_cb_t on_ready;
     sim76xx_on_error_cb_t on_error;
     sim76xx_on_urc_cb_t   on_urc;
@@ -122,6 +138,17 @@ static inline void sim76xx_set_on_error(sim76xx_t *dce, sim76xx_on_error_cb_t cb
 
 static inline void sim76xx_set_on_urc(sim76xx_t *dce, sim76xx_on_urc_cb_t cb){
     dce->on_urc = cb;
+}
+
+/* Network time: returns 1 and fills *utc (unix seconds, UTC) if the last CCLK? was valid, else 0. */
+static inline uint8_t sim76xx_get_utc(sim76xx_t *dce, uint32_t *utc){
+    if (!dce->clk_valid) return 0;
+    if (utc) *utc = dce->clk_utc;
+    return 1;
+}
+
+static inline const char *sim76xx_get_model(sim76xx_t *dce){
+    return dce->model;
 }
 
 static inline uint8_t sim76xx_is_ready(sim76xx_t *dce){
