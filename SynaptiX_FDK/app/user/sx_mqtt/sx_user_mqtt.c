@@ -69,60 +69,6 @@ static void _on_message(sx_mqtt_t *mqtt, const char *topic, const char *message)
     if (s_on_message) s_on_message(topic, message);
 }
 
-// static void _on_publish(sx_mqtt_t *mqtt, int success){
-//     (void)mqtt;
-//     s_publishing = 0;
-//     log_debug(TAG, "Publish %s", success ? "OK" : "FAIL");
-//     if (s_on_publish) s_on_publish(success);
-
-//     if (!success) {
-//         s_publish_retry++;
-//         log_warn(TAG, "Publish fail %d/%d", s_publish_retry, MQTT_PUBLISH_MAX_RETRY);
-//         if (s_publish_retry >= MQTT_PUBLISH_MAX_RETRY) {
-//             log_error(TAG, "Max retry — restart modem");
-//             s_publish_retry = 0;
-//             cqueue_init_static(&s_queue, s_queue_buf, MQTT_QUEUE_SIZE, sizeof(mqtt_queue_item_t));
-//             sim76xx_start(&board.sim76xx);
-//             return;
-//         }
-//         s_publishing = 1;
-//         sx_mqtt_publish(&s_mqtt, s_current_item.topic, s_current_item.message, 1, 0);
-//         return;
-//     }
-
-//     s_publish_retry = 0;
-//     dispatch_next();
-// }
-
-// static void _on_publish(sx_mqtt_t *mqtt, int success){
-//     (void)mqtt;
-//     s_publishing = 0;
-//     log_debug(TAG, "Publish %s", success ? "OK" : "FAIL");
-
-//     if (!success) {
-//         s_publish_retry++;
-//         log_warn(TAG, "Publish fail %d/%d", s_publish_retry, MQTT_PUBLISH_MAX_RETRY);
-//         if (s_publish_retry >= MQTT_PUBLISH_MAX_RETRY) {
-//             log_error(TAG, "Max retry — restart modem");
-//             s_publish_retry = 0;
-//             cqueue_init_static(&s_queue, s_queue_buf, MQTT_QUEUE_SIZE,
-//                                sizeof(mqtt_queue_item_t));
-//             if (s_on_publish) s_on_publish(0);
-//             sim76xx_start(&board.sim76xx);
-//             return;
-//         }
-//         s_publishing = 1;
-//         sx_mqtt_publish(&s_mqtt, s_current_item.topic,
-//                         s_current_item.message, 1, 0);
-//         return;
-//     }
-
-//     // Success
-//     s_publish_retry = 0;
-//     if (s_on_publish) s_on_publish(1);  
-//     dispatch_next();
-// }
-
 static void _on_publish(sx_mqtt_t *mqtt, int success)
 {
     (void)mqtt;

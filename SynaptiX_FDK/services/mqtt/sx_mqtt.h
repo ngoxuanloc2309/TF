@@ -13,7 +13,7 @@ extern "C"{
 #define SX_MQTT_TIMEOUT_ACCQ        2000U
 #define SX_MQTT_TIMEOUT_CONN        8000U
 #define SX_MQTT_TIMEOUT_DISC        5000U
-#define SX_MQTT_TIMEOUT_PUB         3000U
+#define SX_MQTT_TIMEOUT_PUB         5000U
 #define SX_MQTT_TIMEOUT_SUB         5000U
 
 typedef enum{
