@@ -114,6 +114,14 @@ void sx_board_uart_abort(void);
 void sx_board_uart_resume_it(void);
 void check_charge(void);
 
+/* Phase 2: on-demand power */
+int     sx_board_imu_off(void);
+int     sx_board_imu_on(void);
+uint8_t sx_board_imu_is_on(void);
+int     sx_board_i2c1_off(void);
+int     sx_board_i2c1_on(void);
+uint8_t sx_board_i2c1_is_on(void);
+
 extern Board_t board;
 
 #ifdef __cplusplus

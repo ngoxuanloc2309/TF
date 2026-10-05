@@ -205,6 +205,75 @@ void sx_board_init(void)
     sx_adc_reader_init(&board.s_adc_reader);
 }
 
+/* ------------------------------------------------------------------ */
+/*  Phase 2: on-demand power for the IMU and for I2C1                   */
+/* ------------------------------------------------------------------ */
+
+static uint8_t s_imu_powered = 1;      /* sx_board_init() leaves the IMU on */
+
+/* Cut the IMU supply (IMU_EN_PW HIGH) and hold IMU_RESET low so nothing is driven into the unpowered chip. */
+int sx_board_imu_off(void)
+{
+    if (!s_imu_powered) return 0;
+
+    bno055_power_off(&board.imu);
+    sx_gpio_write(&s_imu_reset, SX_GPIO_LOW);
+    board.imu.initialized = false;
+    s_imu_powered = 0;
+    log_info("BOARD", "IMU powered off");
+    return 0;
+}
+
+/* Power the IMU on and bring it back to a usable state (reset pulse + bno055_init). The IMU loses its
+ * calibration with the supply, so the caller restores it afterwards with imu_calib_load() (app.c); that
+ * reads IMU_CALIB_FILE_PATH from the external flash, which sx_storage_* powers on by itself. */
+int sx_board_imu_on(void)
+{
+    if (s_imu_powered && board.imu.initialized) return 0;
+
+    bno055_power_on(&board.imu);                       /* EN low + settle */
+    int rc = bno055_init(&board.imu, &board.i2c1, BNO055_I2C_ADDR_DEFAULT, &s_imu_en, &s_imu_reset);
+    if (rc != 0) {
+        log_error("BOARD", "IMU init failed (rc=%d), powering it off again", rc);
+        s_imu_powered = 1;                             /* so that off() really cuts it */
+        sx_board_imu_off();
+        return rc;
+    }
+    s_imu_powered = 1;
+    return 0;
+}
+
+uint8_t sx_board_imu_is_on(void)
+{
+    return s_imu_powered;
+}
+
+/* I2C1 (BQ, RX8130CE, BNO055 share it). DeInit puts PB6/PB7 in analog mode; the external pull-ups stay. */
+static uint8_t s_i2c1_on = 1;
+
+int sx_board_i2c1_off(void)
+{
+    if (!s_i2c1_on) return 0;
+    if (HAL_I2C_DeInit(&hi2c1) != HAL_OK) return -1;
+    s_i2c1_on = 0;
+    return 0;
+}
+
+int sx_board_i2c1_on(void)
+{
+    if (s_i2c1_on) return 0;
+    if (HAL_I2C_Init(&hi2c1) != HAL_OK) return -1;
+    if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK) return -1;
+    if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK) return -1;
+    s_i2c1_on = 1;
+    return 0;
+}
+
+uint8_t sx_board_i2c1_is_on(void)
+{
+    return s_i2c1_on;
+}
+
 static void sx_sim76_uart_abort(void) {
     HAL_UART_Abort(hal_uart[UART_LTE]);
 }

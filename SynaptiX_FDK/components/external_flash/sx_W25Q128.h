@@ -51,6 +51,9 @@ int  sx_W25Q128_erase_sector    (uint32_t addr);
 void sx_W25Q128_chip_erase(sx_W25Q128_t *dev);
 bool sx_W25Q128_is_busy         (void);
 
+bool sx_W25Q128_probe(sx_W25Q128_t *dev);   /* wake from power-down + check JEDEC, after rail/SPI are up */
+void sx_W25Q128_wait_idle(void);            /* block until WIP clears (safe to cut power afterwards)       */
+
 void sx_W25Q128_sleep_on(sx_W25Q128_t *dev);
 void sx_W25Q128_sleep_off(sx_W25Q128_t *dev);
 void sx_W25Q128_power_down(sx_W25Q128_t *dev);

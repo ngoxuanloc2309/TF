@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef enum {
     APP_MODE_FULL_POWER = 0,
@@ -22,6 +23,9 @@ void app_process(uint32_t delta_ms);
 void app_notify_usb_connected(void);
 
 void app_request_sleep(void);
+
+/* Restore the BNO055 calibration from IMU_CALIB_FILE_PATH (needed after the IMU lost power). */
+bool imu_calib_load(void);
 
 void app_sync_gps_log_to_disk(void);
 

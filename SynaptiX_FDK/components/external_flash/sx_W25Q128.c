@@ -82,17 +82,12 @@ static void w25q_wait_busy_long(uint32_t timeout_ms)
 
 /*API*/
 
-bool sx_W25Q128_init(sx_W25Q128_t *dev, sx_spi_t *spi, sx_gpio_ops_t *pwr_ops, sx_gpio_pin_t *pwr_pin)
+/* Wake from deep power-down (0xAB), wait, then verify the JEDEC ID. Assumes the rail is already on
+ * and SPI is initialised. Used by init and by the power-cycle resume path. */
+static bool w25q_probe(sx_W25Q128_t *dev)
 {
-    dev->spi         = spi;
     dev->initialized = false;
-    s_dev            = dev;
 
-    sx_gpio_init(&dev->power, pwr_ops, pwr_pin);
-    sx_gpio_write(&dev->power, SX_GPIO_LOW);  
-    sx_delay_ms(10);   
-
-    /* Wake from power-down — 1 byte write, 1 lan CS */
     uint8_t wake = W25Q128_CMD_RELEASE_POWER_DOWN;
     sx_spi_write(dev->spi, &wake, 1);
     sx_delay_ms(1);
@@ -108,8 +103,36 @@ bool sx_W25Q128_init(sx_W25Q128_t *dev, sx_spi_t *spi, sx_gpio_ops_t *pwr_ops, s
     }
 
     dev->initialized = true;
+    return true;
+}
+
+bool sx_W25Q128_init(sx_W25Q128_t *dev, sx_spi_t *spi, sx_gpio_ops_t *pwr_ops, sx_gpio_pin_t *pwr_pin)
+{
+    dev->spi         = spi;
+    dev->initialized = false;
+    s_dev            = dev;
+
+    sx_gpio_init(&dev->power, pwr_ops, pwr_pin);
+    sx_gpio_write(&dev->power, SX_GPIO_LOW);
+    sx_delay_ms(10);
+
+    if (!w25q_probe(dev)) return false;
+
     log_info(TAG, "W25Q128 OK (16MB)");
     return true;
+}
+
+bool sx_W25Q128_probe(sx_W25Q128_t *dev)
+{
+    if (!dev) return false;
+    s_dev = dev;
+    return w25q_probe(dev);
+}
+
+void sx_W25Q128_wait_idle(void)
+{
+    if (!s_dev || !s_dev->initialized) return;
+    w25q_wait_busy();
 }
 
 bool sx_W25Q128_is_busy(void)
@@ -230,12 +253,22 @@ void sx_W25Q128_chip_erase(sx_W25Q128_t *dev)
     log_info("W25Q128", "Chip erase done");
 }
 
+/* Cut the flash rail (Flash_PWR: HIGH = off). Waits for any program/erase to finish first, because
+ * removing power in the middle of a write corrupts data. SPI must still be initialised here. */
 void sx_W25Q128_power_down(sx_W25Q128_t *dev){
+    if (dev->initialized) {
+        s_dev = dev;
+        w25q_wait_busy();
+    }
     sx_gpio_write(&dev->power, SX_GPIO_HIGH);
+    dev->initialized = false;
 }
 
+/* Switch the flash rail on (LOW = on) and give it time to settle. The caller must init SPI and then
+ * call sx_W25Q128_probe() before using the flash. */
 void sx_W25Q128_power_up(sx_W25Q128_t *dev){
     sx_gpio_write(&dev->power, SX_GPIO_LOW);
+    sx_delay_ms(10);
 }
 
 void sx_W25Q128_sleep_on(sx_W25Q128_t *dev){

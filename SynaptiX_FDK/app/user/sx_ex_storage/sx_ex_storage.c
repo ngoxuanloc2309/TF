@@ -12,6 +12,8 @@ static const char *TAG = "SX_STORAGE";
 static sx_W25Q128_t     s_w25q128;
 static sx_ext_flash_t   s_flash;
 static bool             s_initialized = false;
+static bool             s_powered     = false;   /* flash rail + SPI1 are up */
+static sx_storage_cfg_t *s_cfg        = NULL;
 
 sx_storage_err_t sx_storage_init(sx_storage_cfg_t *cfg)
 {
@@ -21,10 +23,12 @@ sx_storage_err_t sx_storage_init(sx_storage_cfg_t *cfg)
     sx_gpio_write(&cfg->s_cs, SX_GPIO_HIGH);
     sx_spi_init(&cfg->s_spi, &sx_spi_ops, cfg->hspi, &cfg->s_cs); 
 
+    s_cfg = cfg;
     if (!sx_W25Q128_init(&s_w25q128, &cfg->s_spi, &sx_gpio_ops, &cfg->pwr_pin)) {
         log_error(TAG, "W25Q128 init failed");
         return SX_STORAGE_ERR_IO;
     }
+    s_powered = true;
 
     /* External flash interface */
     sx_ext_flash_init(&s_flash, &sx_W25Q128_ops, &sx_W25Q128_info);
@@ -40,12 +44,21 @@ sx_storage_err_t sx_storage_init(sx_storage_cfg_t *cfg)
     return SX_STORAGE_OK;
 }
 
+/* Every file operation goes through here. If the flash was powered down for sleep, bring it back
+ * first, so callers (write_gps_log, read_last_gps, ...) never have to know about the rail. */
+static sx_storage_err_t _ensure_power(void)
+{
+    if (s_powered) return SX_STORAGE_OK;
+    return sx_storage_wake();
+}
+
 static sx_storage_err_t _check_init(void)
 {
     if (!s_initialized) {
         log_error(TAG, "Not initialized");
         return SX_STORAGE_ERR_NOT_INIT;
     }
+    if (_ensure_power() != SX_STORAGE_OK) return SX_STORAGE_ERR_IO;
     return SX_STORAGE_OK;
 }
 
@@ -125,6 +138,7 @@ sx_storage_err_t sx_storage_delete(const char *path)
 
 bool sx_storage_exists(const char *path){
     if (!s_initialized || path == NULL) return false;
+    if (_ensure_power() != SX_STORAGE_OK) return false;
 
     FILE *f = fopen(path, "r");
     if (f == NULL) return false;
@@ -135,6 +149,7 @@ bool sx_storage_exists(const char *path){
 int32_t sx_storage_size(const char *path)
 {
     if (!s_initialized || path == NULL) return -1;
+    if (_ensure_power() != SX_STORAGE_OK) return -1;
 
     FILE *f = fopen(path, "r");
     if (f == NULL) return -1;
@@ -156,12 +171,14 @@ sx_storage_err_t sx_storage_mkdir(const char *path)
 void sx_storage_list_dir(const char *path)
 {
     if (!s_initialized || path == NULL) return;
+    if (_ensure_power() != SX_STORAGE_OK) return;
     fs_list_dir(path);
 }
 
 int32_t sx_storage_free_space(void)
 {
     if (!s_initialized) return -1;
+    if (_ensure_power() != SX_STORAGE_OK) return -1;
     int32_t used = (int32_t)fs_size();
     if (used < 0) return -1;
     return (int32_t)sx_W25Q128_info.total_bytes - used;
@@ -206,10 +223,50 @@ sx_storage_err_t sx_storage_factory_reset(void)
     return SX_STORAGE_OK;
 }
 
-void sx_storage_sleep(void){
+/* Power the flash off: wait for WIP, cut Flash_PWR, DeInit SPI1 (SCK/MISO/MOSI -> analog) and drive CS
+ * LOW so no signal is pushed into a chip that has no supply. All file handles are closed after each
+ * operation, so LittleFS has nothing pending in the flash. Idempotent. */
+void sx_storage_sleep(void)
+{
+    if (!s_initialized || !s_powered || s_cfg == NULL) return;
 
+    sx_W25Q128_power_down(&s_w25q128);          /* waits for WIP, then rail off */
+    HAL_SPI_DeInit(s_cfg->hspi);
+    sx_gpio_write(&s_cfg->s_cs, SX_GPIO_LOW);
+    s_powered = false;
+    log_info(TAG, "Flash powered off");
 }
 
-void sx_storage_wake(void){
-    
+/* Power the flash back on: rail, settle, SPI1 init, CS idle HIGH, release power-down, check JEDEC.
+ * On failure the rail is cut again and the error is returned. Idempotent. */
+sx_storage_err_t sx_storage_wake(void)
+{
+    if (!s_initialized || s_cfg == NULL) return SX_STORAGE_ERR_NOT_INIT;
+    if (s_powered) return SX_STORAGE_OK;
+
+    sx_W25Q128_power_up(&s_w25q128);            /* rail on + 10 ms */
+
+    if (HAL_SPI_Init(s_cfg->hspi) != HAL_OK) {
+        log_error(TAG, "SPI1 re-init failed");
+        sx_gpio_write(&s_w25q128.power, SX_GPIO_HIGH);
+        return SX_STORAGE_ERR_IO;
+    }
+    sx_gpio_write(&s_cfg->s_cs, SX_GPIO_HIGH);
+
+    if (!sx_W25Q128_probe(&s_w25q128)) {
+        log_error(TAG, "Flash did not answer after power-up");
+        HAL_SPI_DeInit(s_cfg->hspi);
+        sx_gpio_write(&s_cfg->s_cs, SX_GPIO_LOW);
+        sx_gpio_write(&s_w25q128.power, SX_GPIO_HIGH);
+        return SX_STORAGE_ERR_IO;
+    }
+
+    s_powered = true;
+    log_info(TAG, "Flash powered on");
+    return SX_STORAGE_OK;
+}
+
+bool sx_storage_is_powered(void)
+{
+    return s_powered;
 }

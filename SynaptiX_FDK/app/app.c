@@ -273,7 +273,7 @@ static void write_calib_imu_data(void){
     log_info(TAG, "calib saved: %s", line);
 }
 
-static bool imu_calib_load(void)
+bool imu_calib_load(void)
 {
     if (!sx_storage_exists(IMU_CALIB_FILE_PATH)) return false;
 

@@ -53,8 +53,12 @@ int32_t          sx_storage_total_space  (void);
 sx_storage_err_t sx_storage_format       (void);
 sx_storage_err_t sx_storage_factory_reset(void);
 
-void sx_storage_sleep(void);
-void sx_storage_wake(void);
+/*  Power  (Phase 2)
+ *  sleep: wait WIP, cut Flash_PWR, DeInit SPI1, CS low.   wake: reverse + JEDEC check.
+ *  Every sx_storage_* call above wakes the flash by itself if it is off.            */
+void             sx_storage_sleep        (void);
+sx_storage_err_t sx_storage_wake         (void);
+bool             sx_storage_is_powered   (void);
 
 #ifdef __cplusplus
 }
