@@ -334,6 +334,8 @@ static void _apply_default_config(sx_user_mqtt_cfg_t *cfg){
     log_warn("AppCfg", "Using default hardcoded config");
 }
 
+static void _sync_gps_log_to_disk(void);
+
 static void _handle_usb_connected(void)
 {
     g_app.sleep.wake_reason = WAKE_REASON_VBUS;
@@ -348,6 +350,12 @@ static void _handle_usb_connected(void)
     log_info(TAG, "USB re-enumerate (tud_mounted=%d tud_connected=%d)", tud_mounted() ? 1 : 0, tud_connected() ? 1 : 0);
     sx_usb_tiny_msc_disconnect();
     sx_delay_ms(500);
+
+    /* Refresh log_gps.csv on the MSC disk while the host cannot see the drive (D+ pull-up is off), so the
+     * host reads the new FAT when it enumerates again. Writing after the host mounted the disk is not
+     * reliable: the host keeps its own cache of the FAT/directory and is not told that the media changed. */
+    _sync_gps_log_to_disk();
+
     sx_usb_tiny_msc_connect();
 
     g_app.last_publish_done = 0;
@@ -982,6 +990,17 @@ void app_init(void)
 
     sx_user_mqtt_nontls_init(&s_mqtt_cfg);
     read_last_gps();
+
+    /* Boot with USB already plugged: log_gps.csv on the MSC disk still holds the previous content. Update it,
+     * then re-enumerate so the host reads the new FAT instead of its cached copy (and also recovers if it gave up
+     * enumerating while the long init above was running). Skipped on battery: nobody is looking at the drive. */
+    _sync_gps_log_to_disk();
+    if (g_app.board->bq.present) {
+        sx_usb_tiny_msc_disconnect();
+        sx_delay_ms(500);
+        sx_usb_tiny_msc_connect();
+    }
+
     gps_it_handle();
 
     publish_gps("init");

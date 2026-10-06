@@ -214,7 +214,15 @@ int bq25622_config_apply(bq25622_t *dev)
         rc |= reg16_update(dev, BQ25622_REG_IINDPM, 0x0FF0U, (uint16_t)(iin << 4), "IINDPM");
     }
 
-    /* 6) ADC channels: keep VBUS + VBAT only, TS off (ADC then works down to
+    /* 6) IBAT_PK (REG0x19[7:6]): 10b = 6 A, 11b = 12 A (POR). Skipped by reg8_update()
+     *    when the chip already holds the wanted value. */
+    {
+        uint8_t pk_bits = (dev->cfg.ibat_pk == BQ25622_IBAT_PK_6A) ? 0x2U : 0x3U;
+        rc |= reg8_update(dev, BQ25622_REG_CHARGER_CTRL_3, BQ25622_CTRL3_IBAT_PK_MASK,
+                          (uint8_t)(pk_bits << BQ25622_CTRL3_IBAT_PK_SHIFT), "IBAT_PK");
+    }
+
+    /* 7) ADC channels: keep VBUS + VBAT only, TS off (ADC then works down to
      *    VBAT_LOWV (2.7..2.9 V) instead of stopping at 3.2 V). */
     rc |= reg8_update(dev, BQ25622_REG_ADC_DISABLE_0, 0xFFU,
                       (uint8_t)BQ25622_ADC_DIS_MASK, "ADC channels");
@@ -224,8 +232,9 @@ int bq25622_config_apply(bq25622_t *dev)
         return -1;
     }
     dev->cfg_ok = 1;
-    log_info(TAG, "config OK: VREG=%u mV ICHG=%u mA ITERM=%u mA",
-             (unsigned)(vreg * 10U), (unsigned)(ichg * 40U), (unsigned)(iterm * 5U));
+    log_info(TAG, "config OK: VREG=%u mV ICHG=%u mA ITERM=%u mA IBAT_PK=%u A",
+             (unsigned)(vreg * 10U), (unsigned)(ichg * 40U), (unsigned)(iterm * 5U),
+             (unsigned)dev->cfg.ibat_pk);
     return 0;
 }
 
@@ -351,7 +360,7 @@ int bq25622_check_vbat_cutoff(bq25622_t *dev)
     uint8_t low = 0;
 
     if (m == 0) {
-        low = (vbat < (uint16_t)dev->cfg.cutoff);
+        low = (vbat <= (uint16_t)dev->cfg.cutoff);
         log_info(TAG, "VBAT=%u mV (cutoff %u mV)%s", vbat, (unsigned)dev->cfg.cutoff,
                  low ? " LOW" : "");
     } else if (m == -2) {

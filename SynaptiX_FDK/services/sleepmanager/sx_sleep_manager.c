@@ -64,6 +64,9 @@ static uint64_t _rtc_secs(void)
  */
 void sx_sleep_manager_enter(sx_sleep_manager_t *mgr)
 {
+    uint8_t cut_sent = 0;      /* BATFET shutdown already requested in this sleep session */
+    uint8_t cut_wait = 0;      /* wake-fakes survived since then (the chip should have cut the power by now) */
+
     uint32_t sleep_ms  = (mgr->sleep_ms > 0) ? mgr->sleep_ms : SX_TIME_IN_SLEEP;
     uint32_t sleep_sec = sleep_ms / 1000U;
     if (sleep_sec == 0) sleep_sec = 1;
@@ -137,6 +140,23 @@ void sx_sleep_manager_enter(sx_sleep_manager_t *mgr)
 #if SX_WAKE_FAKE_LOG
         log_info(TAG, "wake-fake: VBUS_STAT=%u -> no USB", board.bq.vbus_stat);
 #endif
+
+        /* Battery only, and GPS/SIM/flash are off: the quietest moment to read VBAT. When it reaches VBAT_CUT_OFF
+         * (several readings in a row, see cfg.cutoff_confirm) the BATFET is shut down. Never cuts on an I2C/ADC error. */
+        if (!cut_sent)
+        {
+            if (bq25622_check_vbat_cutoff(&board.bq) == 1)
+            {
+                cut_sent = 1;
+                cut_wait = 0;
+                log_warn(TAG, "VBAT <= %.2f V: BATFET shutdown requested, board powers off in ~12.5 s",
+                         (double)VBAT_CUT_OFF);
+            }
+        }
+        else if (++cut_wait >= 3)
+        {
+            cut_sent = 0;        /* still alive well after the 12.5 s delay: the command was lost, try again */
+        }
     }
 
     mgr->sleep->wake_reason = result;

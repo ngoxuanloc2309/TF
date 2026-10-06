@@ -92,6 +92,16 @@ static void log_print(const char *str)
     sx_uart_write(&board.log_uart, (const uint8_t *)str, strlen(str));
 }
 
+/* BQ25628 start-up (after a successful bq25622_init): read-only snapshot of the POR values, then the project
+ * config. The discharge cut-off comes from VBAT_CUT_OFF (V, app_config.h); the driver keeps it in mV. */
+static void bq_start(void)
+{
+    bq25622_dump_regs(&board.bq);                /* read-only, FLAG regs clear on read: boot only */
+    board.bq.cfg.cutoff = (bq25622_cutoff_t)(unsigned)(VBAT_CUT_OFF * 1000.0 + 0.5);
+    bq25622_config_apply(&board.bq);             /* WATCHDOG off FIRST, then VREG/ICHG/ITERM/IBAT_PK/ADC mask */
+    log_info(TAG, "VBAT cut-off = %u mV", (unsigned)board.bq.cfg.cutoff);
+}
+
 /* ---- Phase 0 diagnostic: I2C1 scan (turn off with -DI2C_SCAN_DEBUG=0) ---- */
 #ifndef I2C_SCAN_DEBUG
 #define I2C_SCAN_DEBUG 1
@@ -118,7 +128,7 @@ static void i2c1_scan_debug(void)
     if (!board.bq.online) {
         log_info(TAG, "BQ25628 retry init after scan...");
         if (bq25622_init(&board.bq, &board.i2c1) == 0)
-            bq25622_dump_regs(&board.bq);        /* read-only, FLAG regs clear on read: once only */
+            bq_start();
     }
 }
 #endif
@@ -178,9 +188,9 @@ void sx_board_init(void)
 
     // I2C
     sx_i2c_init(&board.i2c1, &sx_i2c_ops, &hi2c1);
-    // BQ25628 (read-only; nothing is written to the chip yet)
+    // BQ25628: probe, read-only snapshot of the POR values, then apply the project config
     if (bq25622_init(&board.bq, &board.i2c1) == 0)
-        bq25622_dump_regs(&board.bq);            /* read-only snapshot, FLAG regs clear on read: boot only */
+        bq_start();
     // RTC
     sx_gpio_init(&s_rtc_pwr,   &sx_gpio_ops, &s_rtc_pwr_pin);
     rx8130ce_init(&board.rtc,  &board.i2c1, &s_rtc_pwr);

@@ -76,6 +76,7 @@ extern "C" {
 #define BQ25622_CTRL2_BATFET_DLY        0x04U           /* 1 = 12.5 s delay (POR), 0 = 25 ms */
 /* REG0x19 (Charger Control 3) - read-only use for now */
 #define BQ25622_CTRL3_IBAT_PK_SHIFT     6               /* 10b = 6 A, 11b = 12 A (POR) */
+#define BQ25622_CTRL3_IBAT_PK_MASK      0xC0U           /* REG0x19[7:6]; 00b/01b are reserved */
 #define BQ25622_CTRL3_VBAT_UVLO         0x20U           /* 0 = 2.2 V (POR), 1 = 1.8 V   */
 /* REG0x20 / REG0x26 */
 #define BQ25622_FLAG0_ADC_DONE          0x40U
@@ -178,11 +179,20 @@ typedef enum {
     BQ25622_BATFET_DLY_12S5  = 1,           /* chip default (POR): time to flush logs */
 } bq25622_batfet_dly_t;
 
+/* Battery discharging peak-current protection (REG0x19[7:6], fast ~100 us trip).
+ * Only 6 A and 12 A exist. This is a short-circuit / overload protection, NOT a load limit.
+ * BATFET_OCP (6 A, ~50 ms) is a separate fixed threshold and cannot be changed. */
+typedef enum {
+    BQ25622_IBAT_PK_6A  = 6,                /* 10b */
+    BQ25622_IBAT_PK_12A = 12,               /* 11b, chip default (POR) */
+} bq25622_ibat_pk_t;
+
 typedef struct {
     bq25622_vreg_t       vreg;
     bq25622_ichg_t       ichg;
     bq25622_iterm_t      iterm;
     bq25622_iindpm_t     iindpm;
+    bq25622_ibat_pk_t    ibat_pk;           /* discharge peak-current protection */
     uint8_t              en_chg;            /* 1 = charging enabled */
 
     bq25622_cutoff_t     cutoff;
@@ -194,14 +204,16 @@ typedef struct {
     bq25622_batfet_dly_t batfet_dly;
 } bq25622_cfg_t;
 
-/* Project defaults: 4.2 V, 480 mA, cutoff 2.9 V.
- * NOT applied to the chip unless bq25622_config_apply() is called (nobody calls it yet).
- * ICHG is a placeholder: pick it from the real cell pack's max charge current. */
+/* Project defaults (user decision): VREG 4.2 V, ICHG 320 mA, ITERM 20 mA, IBAT_PK 12 A,
+ * cutoff 2.9 V. VREG/ICHG/ITERM/IBAT_PK equal the chip POR values, so config_apply() only
+ * has to write what differs from POR (WATCHDOG off, ADC channel mask).
+ * Applied from sx_board_init() right after bq25622_init() succeeds. */
 #define BQ25622_CFG_DEFAULT {                       \
     .vreg                  = BQ25622_VREG_4200MV,   \
-    .ichg                  = BQ25622_ICHG_480MA,    \
-    .iterm                 = BQ25622_ITERM_60MA,    \
+    .ichg                  = BQ25622_ICHG_320MA,    \
+    .iterm                 = BQ25622_ITERM_20MA,    \
     .iindpm                = BQ25622_IINDPM_KEEP,   \
+    .ibat_pk               = BQ25622_IBAT_PK_12A,   \
     .en_chg                = 1,                     \
     .cutoff                = BQ25622_CUTOFF_2900MV, \
     .cutoff_confirm        = 3,                     \

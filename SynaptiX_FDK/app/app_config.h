@@ -31,6 +31,12 @@
 
 #define ENTER_SLEEP_TIMEOUT_MS          10000U
 
+/* Battery discharge cut-off (volts). While running on battery only (no USB) the firmware reads VBAT from the
+ * BQ25628 ADC every wake-fake period; when it reads this value or lower (several readings in a row) it sends
+ * BATFET shutdown and the board loses power after BATFET_DLY (12.5 s). Plug USB to start it again.
+ * Keep it >= ~2.9 V: below VBAT_LOWV (2.8 V falling) the chip ADC refuses to run, so a lower value never triggers. */
+#define VBAT_CUT_OFF                    3.0
+
 
 #define DELTA_T                         100U
 
