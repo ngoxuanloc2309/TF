@@ -83,6 +83,13 @@ typedef struct Board{
 #define VBUS_PORT                GPIOC
 #define VBUS_PIN                 GPIO_PIN_1
 
+/* Board v1.4 has NO GPIO for USB detection: the only source is VBUS_STAT of the charger (I2C1).
+ * 1 = PC1 is not used for VBUS: its EXTI is disabled, check_charge() follows the charger, and
+ *     the PC1 EXTI callbacks are compiled out.   0 = old v1.2 behaviour (PC1 wired to VBUS). */
+#ifndef SX_VBUS_FROM_BQ
+#define SX_VBUS_FROM_BQ          1
+#endif
+
 /*  SPI */
 #define SPI_CS_Port             GPIOA
 #define SPI_CS_Pin              GPIO_PIN_4

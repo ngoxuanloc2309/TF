@@ -305,6 +305,12 @@ void app_notify_usb_connected(void)
 {
     g_app.usb_connect_pending = 1;
     g_app.app_mode = APP_MODE_FULL_POWER;
+
+    /* A connect cancels any sleep that was requested but not finished (ENTER_SLEEP). Without this the
+     * flag stays set and the next unplug is ignored by app_request_sleep(). */
+    g_app.sleep_requested        = 0;
+    g_app.enter_sleep_elapsed_ms = 0;
+    g_app.enter_sleep_published  = 0;
 }
 
 static void _apply_default_config(sx_user_mqtt_cfg_t *cfg){
@@ -320,6 +326,8 @@ static void _handle_usb_connected(void)
     g_app.last_publish_done = 0;
     g_app.publish_count = 0;
     g_app.enter_sleep_published = 0;
+    g_app.enter_sleep_elapsed_ms = 0;
+    g_app.sleep_requested = 0;
     g_app.mqtt_stopped = 0;
     g_app.subscribed = 0;
     g_app.publish_elapsed = 0;
@@ -968,28 +976,16 @@ void app_init(void)
 #if BQ_PHASE0_DEBUG
 static void bq_phase0_debug(uint32_t delta_ms)
 {
-    static uint32_t read_acc = 0, hb_acc = 0;
+    static uint32_t hb_acc = 0;
     static int16_t  last_vbus = -1;         /* -1 = nothing printed yet   */
-    static uint8_t  last_err = 0;
 
-    read_acc += delta_ms;
-    hb_acc   += delta_ms;
-    if (read_acc < BQ_PHASE0_READ_MS)
-        return;
-    read_acc = 0;
+    hb_acc += delta_ms;
 
     bq25622_t *bq = &g_app.board->bq;
-
-    if (bq25622_read_status(bq) != 0) {
-        if (!last_err || hb_acc >= BQ_PHASE0_HEARTBEAT_MS) {
-            log_warn(TAG, "BQ VBUS_STAT read FAIL (I2C) - keep last=%d", (int)last_vbus);
-            hb_acc = 0;
-        }
-        last_err = 1;
+    if (!bq->valid)
         return;
-    }
-    last_err = 0;
 
+    /* Passive: bq25622_poll() (app_vbus_process) does the I2C read, this only prints it. */
     if (bq->vbus_stat != last_vbus || hb_acc >= BQ_PHASE0_HEARTBEAT_MS) {
         log_info(TAG, "BQ VBUS_STAT=%u%u%u CHG_STAT=%u -> %s",
                  (bq->vbus_stat >> 2) & 1, (bq->vbus_stat >> 1) & 1, bq->vbus_stat & 1,
@@ -1001,6 +997,75 @@ static void bq_phase0_debug(uint32_t delta_ms)
     }
 }
 #endif
+
+/* ---- Phase 3b: USB presence from the charger (VBUS_STAT over I2C1) ---------------------------
+ * No GPIO on v1.4. bq25622_poll() reads every BQ25622_POLL_INTERVAL_MS, debounces, and never treats
+ * an I2C error as "unplugged". Sleep is requested here, not by the USB stack (see tud_umount_cb). */
+#ifndef SX_SLEEP_ON_BATTERY
+#define SX_SLEEP_ON_BATTERY   1      /* 1 = boot without USB goes to the sleep flow; 0 = stay in FULL_POWER */
+#endif
+#ifndef SX_BOOT_SLEEP_MAX_WAIT_MS
+#define SX_BOOT_SLEEP_MAX_WAIT_MS  120000U   /* boot on battery: wait this long for MQTT before sleeping anyway */
+#endif
+
+static void app_vbus_process(uint32_t delta_ms)
+{
+    static uint8_t  s_boot_checked       = 0;
+    static uint8_t  s_boot_sleep_pending = 0;
+    static uint32_t s_boot_wait_ms       = 0;
+    bq25622_t *bq = &g_app.board->bq;
+
+    bq25622_event_t ev = bq25622_poll(bq, delta_ms);
+
+    if (!s_boot_checked && bq->valid) {
+        s_boot_checked = 1;
+        log_info(TAG, "Power source at boot: %s", bq->present ? "USB" : "battery");
+        if (!bq->present && SX_SLEEP_ON_BATTERY)
+            s_boot_sleep_pending = 1;
+        return;
+    }
+
+    /* Booted on battery: let the modem connect and publish once (ENTER_SLEEP publishes "enter sleep"),
+     * then sleep. Requesting sleep right away would make ENTER_SLEEP give up on MQTT after 5 s, before
+     * the modem has even registered. */
+    if (s_boot_sleep_pending)
+    {
+        s_boot_wait_ms += delta_ms;
+        if (bq->present) {
+            s_boot_sleep_pending = 0;               /* USB showed up meanwhile */
+        } else if (g_app.app_mode == APP_MODE_FULL_POWER &&
+                   (sx_user_mqtt_is_connected() || s_boot_wait_ms >= SX_BOOT_SLEEP_MAX_WAIT_MS)) {
+            s_boot_sleep_pending = 0;
+            log_info(TAG, "Boot on battery - starting sleep flow (mqtt=%d, waited %lu ms)",
+                     sx_user_mqtt_is_connected() ? 1 : 0, (unsigned long)s_boot_wait_ms);
+            app_request_sleep();
+        }
+    }
+
+    if (ev == BQ25622_EVT_UNPLUGGED)
+    {
+        if (g_app.app_mode == APP_MODE_FULL_POWER)
+            app_request_sleep();
+    }
+    else if (ev == BQ25622_EVT_PLUGGED)
+    {
+        if (g_app.app_mode == APP_MODE_ENTER_SLEEP)
+        {
+            /* modem and MQTT are still running: just cancel the pending sleep */
+            log_info(TAG, "USB plugged during ENTER_SLEEP - back to FULL_POWER");
+            g_app.sleep_requested        = 0;
+            g_app.enter_sleep_elapsed_ms = 0;
+            g_app.enter_sleep_published  = 0;
+            g_app.app_mode               = APP_MODE_FULL_POWER;
+        }
+        else if (g_app.app_mode == APP_MODE_WAKE_PUBLISH)
+        {
+            /* the SIM may not even be powered yet at this point: use the full restart path */
+            log_info(TAG, "USB plugged during WAKE_PUBLISH - full restart");
+            app_notify_usb_connected();
+        }
+    }
+}
 
 /*  Process  */
 void app_process(uint32_t timestamp)
@@ -1030,6 +1095,7 @@ void app_process(uint32_t timestamp)
 
     app_sync_rtc_from_modem();   /* network time (CCLK?) -> external RTC, once per new sample */
     read_vol_pin(timestamp);
+    app_vbus_process(timestamp);          /* BQ VBUS_STAT -> plug/unplug events (no GPIO on v1.4) */
     check_charge();
 #if BQ_PHASE0_DEBUG
     bq_phase0_debug(timestamp);
@@ -1081,7 +1147,7 @@ void app_process(uint32_t timestamp)
 
     /* ---------------------------------------------------------------- */
     case APP_MODE_ENTER_SLEEP:
-        if (sx_usb_tiny_connected(&g_app.board->usb))
+        if (sx_usb_tiny_connected(&g_app.board->usb) || g_app.board->bq.present)
         {
             g_app.sleep_requested = 0;
             g_app.enter_sleep_elapsed_ms = 0;
@@ -1149,11 +1215,11 @@ void app_process(uint32_t timestamp)
             }
             else {
                 log_warn(TAG, "Spurious wake — reason=%d", wake_reason);
-                if (HAL_GPIO_ReadPin(VBUS_PORT, VBUS_PIN) == GPIO_PIN_SET) {
-                    log_info(TAG, "VBUS is HIGH after unknown wake — handling as USB connect");
+                if (bq25622_refresh(&g_app.board->bq)) {
+                    log_info(TAG, "VBUS present (BQ) after unknown wake — handling as USB connect");
                     app_notify_usb_connected();
                 } else {
-                    log_info(TAG, "VBUS is LOW after unknown wake — re-entering sleep");
+                    log_info(TAG, "No VBUS (BQ) after unknown wake — re-entering sleep");
                     g_app.app_mode = APP_MODE_SLEEP;
                 }
             }

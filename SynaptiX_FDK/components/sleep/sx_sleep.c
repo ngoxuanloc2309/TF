@@ -80,10 +80,14 @@ static void _enter_stop(sx_sleep_t *mgr)
     SX_SUSPEND_TICS();
     s_enter_stop(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
 
-    /* ── Sau wake: restore ── */
+    /* ── Sau wake: restore ──
+     * The tick must be running BEFORE SystemClock_Config(): HAL_RCC_OscConfig() waits for HSE/PLL with
+     * HAL_GetTick() timeouts, and with SysTick still suspended those timeouts never expire (a clock that
+     * fails to start would hang here forever). HAL_RCC_ClockConfig() re-runs HAL_InitTick() afterwards, so
+     * the SysTick reload is corrected once the final clock is set. */
     extern void SystemClock_Config(void);
-    SystemClock_Config();
     SX_RESUME_TICS();
+    SystemClock_Config();
 
     HAL_NVIC_EnableIRQ(USB_DRD_FS_IRQn);
 }
