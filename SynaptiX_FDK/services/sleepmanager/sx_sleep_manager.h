@@ -12,13 +12,6 @@ extern "C" {
 #include "gps.h"
 #include "sx_W25Q128.h"
 
-/* Wake-fake period: how often the MCU wakes during sleep just to read VBUS_STAT from the BQ over I2C1
- * (nothing else is powered). v1.4 has no GPIO/INT to wake on USB plug, so this is the worst-case delay
- * before a plugged USB is noticed. Override with -D or set mgr->check_ms (0 = use this default). */
-#ifndef SX_TIME_CHECK_VBUS_MS
-#define SX_TIME_CHECK_VBUS_MS   10000U
-#endif
-
 typedef enum {
     SX_WAKE_STEP_IDLE = 0,
     SX_WAKE_STEP_GPS_ON_FIRST,   
@@ -51,7 +44,7 @@ typedef struct {
     sx_wake_step_t wake_step;
     uint8_t        published;          
     uint32_t       sleep_ms;        /* publish period (time_sleeps)                */
-    uint32_t       check_ms;        /* wake-fake period (time_check_vbus), 0 = default */
+    uint32_t       check_ms;        /* wake-fake period, 0 = SX_TIME_WAKE_FAKE (app_config.h) */
     uint32_t       wake_timeout_ms;
 } sx_sleep_manager_t;
 

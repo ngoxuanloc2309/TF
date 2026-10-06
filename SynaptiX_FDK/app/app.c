@@ -326,15 +326,14 @@ static void _handle_usb_connected(void)
     log_info(TAG, "=== USB connected — restarting ===");
 
     /* The USB cable was plugged while the MCU was in STOP (USB IRQ off, clock stopped), so the host's
-     * enumeration got no answer and it gave up ("unknown USB device"). If the host has not mounted us,
-     * toggle the D+ pull-up so it sees a fresh plug and enumerates again (CDC + MSC). */
-    if (!tud_mounted())
-    {
-        log_info(TAG, "USB not mounted by host — re-enumerate");
-        sx_usb_tiny_msc_disconnect();
-        sx_delay_ms(500);
-        sx_usb_tiny_msc_connect();
-    }
+     * enumeration got no answer and it gave up ("unknown USB device"). tud_mounted() cannot be trusted
+     * here: the stack never saw the unplug (no VBUS sensing, IRQ off in STOP), so it still reports the old
+     * configuration (log shows "USB tiny resumed"). Always toggle the D+ pull-up so the host sees a fresh
+     * plug and enumerates CDC + MSC again. */
+    log_info(TAG, "USB re-enumerate (tud_mounted=%d tud_connected=%d)", tud_mounted() ? 1 : 0, tud_connected() ? 1 : 0);
+    sx_usb_tiny_msc_disconnect();
+    sx_delay_ms(500);
+    sx_usb_tiny_msc_connect();
 
     g_app.last_publish_done = 0;
     g_app.publish_count = 0;

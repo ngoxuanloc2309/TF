@@ -5,7 +5,7 @@ MCU: STM32H563 (HAL, Makefile, arm-none-eabi-gcc). Framework nội bộ: `Synapt
 Tài liệu tham chiếu: datasheet BQ25620/BQ25622 (SLUSEG2D Rev. D). Số trang là số trang trong file PDF, có thể lệch vài trang so với số in ở chân trang.
 Repo tham khảo (weather station, không có chân cắt nguồn nên tắt module bằng lệnh phần mềm): https://github.com/logan123synaptix/WS_v1.git
 
-**Trạng thái (cập nhật 06/10/2026):** Phase 0 chạy được trên board. **Phase 1 (giờ mạng) xong và đã kiểm chứng trên board** (mục 6, mục 12). **Phase 2 đã code và test trên board phần lớn** (mục 12): cắt/bật nguồn flash và I2C1 đạt; **cắt nguồn IMU không dùng được** (kéo sập bus I2C1), thay bằng SUSPEND. Còn 2 việc kiểm tra chưa xong (mục 12.4). Phase 3–6 vẫn là kế hoạch, chưa có code. **Chip nguồn trên board không phải BQ25622 như giả định (mục 7a).** Chưa đo dòng ngủ, chưa test sleep thật trên board.
+**Trạng thái (cập nhật 06/10/2026, cuối phiên Phase 3):** Phase 0 và Phase 1 xong. Phase 2 test gần xong (mục 12.4). **Phase 3 phần lõi đã code và chạy trên board** (mục 13): vòng wake-fake (ngủ STOP, mỗi `SX_TIME_WAKE_FAKE` thức dậy chỉ bật I2C1 đọc `VBUS_STAT`), phát hiện cắm USB lúc đang ngủ rồi wake-real, và USB (CDC + MSC) nhận lại được trên máy tính nhờ re-enumerate. Người dùng báo rút/cắm USB detect mượt. **Đã bỏ hẳn đọc pin bằng ADC MCU và ngắt/đọc chân VBUS (PC1/EXTI)** khỏi board và app. **Chưa làm / chưa kiểm chứng của Phase 3:** `time_check_vbus` trong `config.json`, DeInit UART lúc ngủ, lớp `acquire/release`, đo dòng ngủ, nhiều chu kỳ publish liên tiếp, các ca biên (mục 13.5). Phase 4 một phần có sẵn trong luồng hiện tại; Phase 5–6 chưa có code. **Chip nguồn trên board không phải BQ25622 như giả định (mục 7a).** **Firmware chưa ghi bất kỳ thanh ghi cấu hình nào xuống BQ (mục 13.6).**
 
 ---
 
@@ -27,27 +27,29 @@ v1.2 và v1.4 chỉ khác khối nguồn:
 - **Không có ADC của MCU để đọc VBAT.** Chỉ có I2C tới BQ.
 - Sleep rất dài.
 
-Hệ quả: **không có nguồn wake tức thì khi cắm USB.** Chỉ làm được bằng polling định kỳ (RTC wakeup ngắn). Đổi PB6/PB7 sang GPIO vô ích vì BQ là I2C slave, không tự tạo cạnh trên SCL/SDA. Không nối INT vào SDA/SCL.
+Hệ quả: **không có nguồn wake tức thì khi cắm USB.** Chỉ làm được bằng polling định kỳ (RTC wakeup ngắn). Đổi PB6/PB7 sang GPIO vô ích vì BQ là I2C slave, không tự tạo cạnh trên SCL/SDA. Không nối INT vào SDA/SCL. **Hệ quả đã gặp thật:** cắm USB lúc MCU đang STOP thì host Windows enumerate không được trả lời nên báo "unknown USB device"; đã xử lý bằng re-enumerate khi wake-real (mục 13.3).
 
-## 2. Hiện trạng code (v1.2) cần biết
+## 2. Hiện trạng code (sau Phase 3, 06/10/2026)
 
-Luồng hiện tại (`SynaptiX_FDK/app/app.c`):
+Luồng (`SynaptiX_FDK/app/app.c`):
 - **`FULL_POWER`:** có USB, chạy bình thường.
-- Rút USB: `HAL_GPIO_EXTI_Falling_Callback` (`board/sx_board.c`) gọi `app_request_sleep()`. Chuyển sang **`ENTER_SLEEP`**: vẫn chạy GPS/MQTT, publish "enter sleep" (GSM + GPS). Thoát khi publish xong, hoặc MQTT mất quá 5 s, hoặc quá `ENTER_SLEEP_TIMEOUT_MS`. Nếu USB cắm lại trong lúc này thì quay về `FULL_POWER`.
-- **`SLEEP`:** `sx_user_mqtt_force_disconnect()`, `queue_flush()`, rồi `sx_sleep_manager_enter()`: tắt GPS (`gps_power_off`), tắt SIM (`sim76xx_power_off_blocking`, xung PWRKEY + delay), đặt RTC wakeup, vào STOP.
-- Nguồn đánh thức: **RTC** thì sang **`WAKE_PUBLISH`**; **EXTI PC1** (cắm USB) thì về `FULL_POWER`.
-- **`WAKE_PUBLISH`:** bật GPS, chờ fix (tối đa `GPS_TIMEOUT_MS` = 130 s), bật SIM và chờ sẵn sàng (tối đa 90 s), kết nối MQTT, publish "wake up", ghi log GPS (`write_gps_log`), cập nhật giờ RTC ngoài từ GPS, rồi quay lại `SLEEP`. Cả chuỗi bị giới hạn bởi `SX_TIME_IN_WAKE` (160 s).
-- Chu kỳ ngủ: `SX_TIME_IN_SLEEP` = 60000 ms mặc định, ghi đè bằng `time_sleeps` (giây) trong `config.json`.
+- Rút USB: `bq25622_poll` (debounce `VBUS_STAT`) thấy `VBUS_STAT=0` → `app_request_sleep()`. Chuyển sang **`ENTER_SLEEP`**: vẫn chạy GPS/MQTT, publish "enter sleep" (GSM + GPS). Thoát khi publish xong, hoặc MQTT mất quá 5 s, hoặc quá `ENTER_SLEEP_TIMEOUT_MS`. Nếu USB cắm lại trong lúc này thì quay về `FULL_POWER`. **`ENTER_SLEEP_TIMEOUT_MS` hiện = 1000 ms nên log thường thấy `Enter sleep — timeout`, tức bản tin "enter sleep" gần như không kịp gửi** (mục 9 #14).
+- **`SLEEP`:** `sx_user_mqtt_force_disconnect()`, `queue_flush()`, rồi `sx_sleep_manager_enter()` (`services/sleepmanager/`): tắt GPS, tắt SIM (`sim76xx_power_off_blocking`), `sx_storage_sleep()` (cắt flash), `sx_board_imu_suspend()`, rồi **vòng wake-fake** (mục 13.2).
+- Kết quả của `sx_sleep_manager_enter()` là `wake_reason`: **`WAKE_REASON_RTC`** (hết `time_sleeps`) → **`WAKE_PUBLISH`**; **`WAKE_REASON_VBUS`** (thấy USB trong wake-fake) → `app_notify_usb_connected()` → xử lý `usb_connect_pending` (log `=== USB connected — restarting ===`): re-enumerate USB rồi về `FULL_POWER`.
+- **`WAKE_PUBLISH`:** bật GPS, chờ fix (tối đa `GPS_TIMEOUT_MS` = 130 s), bật SIM và chờ sẵn sàng (tối đa 90 s), kết nối MQTT, publish "wake up", ghi log GPS (`write_gps_log`), cập nhật giờ RTC ngoài từ GPS, rồi quay lại `SLEEP`. Cả chuỗi bị giới hạn bởi `SX_TIME_IN_WAKE` (160 s). Khi vào `WAKE_PUBLISH`, I2C1 đang **bật** (cần cho RTC ngoài), IMU vẫn SUSPEND, flash tự bật khi `sx_storage_*` được gọi.
+- Chu kỳ ngủ (publish): `SX_TIME_IN_SLEEP` = 60000 ms mặc định (`app_config.h`), ghi đè bằng `time_sleeps` (giây) trong `config.json`.
+- Chu kỳ wake-fake: macro **`SX_TIME_WAKE_FAKE`** (`app_config.h`, mặc định 10000 ms). Trường `check_ms` trong `sx_sleep_manager_t` (0 = dùng macro) để dành cho `time_check_vbus`; **chưa đọc từ `config.json`**.
 
-Sleep hiện tại **chỉ tắt GPS và SIM**. `_enter_stop()` (`components/sleep/sx_sleep.c`) chỉ abort UART1/UART2, tắt NVIC USB, dừng SysTick rồi WFI; sau wake gọi `SystemClock_Config()`. Không DeInit ngoại vi nào, không tắt flash, IMU, RTC ngoài.
+`_enter_stop()` (`components/sleep/sx_sleep.c`) abort UART1/UART2, tắt NVIC USB, dừng SysTick, WFI; sau wake gọi `SX_RESUME_TICS()` rồi `SystemClock_Config()` (**thứ tự đã đúng**, handoff cũ ghi sai). **Chưa DeInit UART/SPI** lúc ngủ (UART log vẫn sống), nên dòng ngủ chưa phải thấp nhất.
 
 Các thành phần khác:
-- `components/bq25622/`: driver **chỉ đọc** (`bq25622_init/poll/refresh/read_status`, poll + debounce). **Chưa được gọi ở đâu, và `bq25622.c` chưa có trong build** (cần thêm vào `synaptix.mk`, thêm `-I` vào `Makefile`).
-- `sx_board.c`: `HAL_GPIO_EXTI_*_Callback` xử lý cắm/rút (điều khiển `EN_CHARGE`/`EN_DISCHARGE`, gọi `app_mode_full_pw`, `app_notify_usb_connected`, `app_request_sleep`); `check_charge()` đọc `VBUS_PIN` mỗi vòng lặp.
-- `sx_board.c:221` gán `board.voltage.v_bat` từ ADC MCU (`services/read_bat`), và `app.c:330` dùng `v_bat` trong payload publish. **v1.4 không dùng được ADC MCU**, cần thay bằng VBAT từ BQ.
-- `app/user/sx_ex_storage/` (không phải `services/`): `sx_storage_sleep()`/`sx_storage_wake()` **đã được cài ở Phase 2** (mục 12.2). Mọi hàm `sx_storage_*` tự bật flash nếu đang tắt.
-- `components/sim76xx/sim76xx.c`: **đã có `AT+CTZU=1`/`AT+CCLK?`** (Phase 1) và `sim76xx_get_utc_now()`. `app.c` đã đồng bộ RTC ngoài từ giờ mạng và từ GPS (mục 12.1).
-- Bug có sẵn: cắm USB trong lúc `ENTER_SLEEP` làm `sleep_requested` bị kẹt, lần rút sau `app_request_sleep()` bị bỏ qua. Cần reset cờ này khi xử lý cắm USB.
+- `components/bq25622/`: driver đọc (`bq25622_init/poll/refresh/read_status`) đã vào build và chạy ở `0x6A`. Có sẵn `bq25622_config_apply()` và `BQ25622_CFG_DEFAULT` (4.2 V, 480 mA, ITERM 60 mA, cutoff 2.9 V) nhưng **không ai gọi** (mục 13.6).
+- `sx_board.c`: `check_charge()` chỉ theo `board.bq.present` (không còn đọc `VBUS_PIN`). **Đã xóa:** `HAL_GPIO_EXTI_*_Callback`, `VBUS_PORT/VBUS_PIN`, macro `SX_VBUS_FROM_BQ`, `sx_sleep_set_exti_wake()`, toàn bộ đọc ADC (`read_vol_pin`, `s_adc_reader`, `raw_adc`, `v_adc`, `hal_adc`, `TIME_READ_PIN`). `sx_board_init()` vẫn `HAL_NVIC_DisableIRQ(EXTI1_IRQn)` + `HAL_GPIO_DeInit(GPIOC, GPIO_PIN_1)` vì CubeMX (`gpio.c`) còn cấu hình PC1 là EXTI, chân thả nổi sẽ wake MCU khỏi STOP.
+- `board.voltage.v_bat` (float, V) còn lại và **luôn = 0.0** (payload GSM có `"vbat":0.000000`) cho tới khi làm Phase 6 (VBAT từ ADC của BQ). Còn sót (chưa xóa, không ai gọi): `services/read_bat/` (trong `synaptix.mk` và `-I` của `Makefile`), `Core/Src/adc.c` và `MX_ADC1_Init()` (CubeMX), `EXTI1_IRQHandler` và cấu hình PC1 (CubeMX).
+- `app/user/sx_ex_storage/` (không phải `services/`): `sx_storage_sleep()`/`sx_storage_wake()` đã cài ở Phase 2 (mục 12.2). Mọi hàm `sx_storage_*` tự bật flash nếu đang tắt. `NO DATA FROM EXFLASH!` trong `read_last_gps()` chỉ nghĩa là file log GPS rỗng/chưa có (`sx_storage_size() <= 0`), thường do chưa từng có fix; payload khi đó là `lat:0, fix:0`.
+- `components/sim76xx/sim76xx.c`: đã có `AT+CTZU=1`/`AT+CCLK?` (Phase 1) và `sim76xx_get_utc_now()`. `app.c` đã đồng bộ RTC ngoài từ giờ mạng và GPS (mục 12.1).
+- Publish MQTT là hàng đợi: `sx_user_mqtt_publish()` gửi ngay tin đầu nếu rảnh, các tin sau chờ trong queue và được gửi lần lượt khi callback `publish OK` của tin trước tới (QoS 1). Vì vậy trong log `GSM:` rồi `GPS:` rồi hai dòng `MQTT publish OK` là bình thường (dòng OK đầu là của GSM).
+- Bug cũ `sleep_requested` bị kẹt khi cắm USB lúc `ENTER_SLEEP`: các chỗ xử lý cắm USB trong `app.c` đã reset cờ về 0 (đọc code), **nhưng chưa test trên board**.
 
 ## 3. Chân cắt nguồn có sẵn (khác WS_v1)
 
@@ -90,11 +92,25 @@ Nguyên tắc: **ngoại vi theo nhu cầu.** Khi sleep thì DeInit hết và c�
 - UART log bị DeInit lúc ngủ nên khó debug: dùng cờ compile để giữ log UART khi debug, tắt khi đo dòng.
 - Thêm trường mới `time_check_vbus` (giây) trong `config.json` (chu kỳ wake-fake). `config.json` hiện có: `apn`, `mqtt`, `time_sleeps`, `device_id`, `time_publish`.
 
+**Trạng thái cài đặt của thiết kế này (06/10/2026):**
+
+| Hạng mục | Trạng thái |
+|---|---|
+| Wake-fake chỉ bật I2C1, đọc `VBUS_STAT` | **Đã cài, chạy trên board** (mục 13.2) |
+| Tắt GPS/SIM, cắt flash, IMU SUSPEND trước khi ngủ | Đã cài (`sx_sleep_manager_enter`) |
+| Wake-real: resume IMU, về `FULL_POWER`, re-enumerate USB | Đã cài, USB nhận lại được |
+| Đếm chu kỳ publish theo RTC | Đã cài (lịch RTC trong chip, lấy max với tổng các chu kỳ danh nghĩa) |
+| `time_check_vbus` trong `config.json` | **Chưa** (đang dùng macro `SX_TIME_WAKE_FAKE`) |
+| DeInit SPI/I2C/UART (UART log sau cùng), PA4/PB5 về LOW/analog | **Chưa** (chỉ DeInit I2C1 trong vòng wake-fake và SPI trong `sx_storage_sleep`) |
+| Lớp `acquire/release`, `release_all()` | **Chưa** |
+| Cờ giữ UART log khi debug | Có `SX_WAKE_FAKE_LOG` (mặc định 1) cho log trong vòng wake-fake |
+| Gọi `imu_calib_load()` sau resume | **Chưa** (chưa biết suspend có mất calib không) |
+
 ## 5. Bài học từ WS_v1 (đã gặp lỗi thật ở đó)
 
 - Trước khi cắt/đưa flash vào power-down phải `w25q_wait_busy()`. Làm ngay sau ghi/erase thì treo bus. Cắt nguồn giữa lúc ghi còn có thể hỏng dữ liệu.
 - Chỉ cut clock (`__HAL_RCC_xxx_CLK_DISABLE`) không đủ; phải `HAL_xxx_DeInit()` (MspDeInit đưa pin về analog) thì dòng mới giảm rõ. I2C có pull-up ngoài, nếu pin để AF_OD mà bus đang bị kéo thấp thì rò suốt STOP. TIM/LPTIM phải dùng `DeInit`, không dùng CLK_DISABLE thô, nếu không sau wake `MX_*_Init()` bỏ qua MspInit và treo ở `Error_Handler()`.
-- `SX_RESUME_TICS()` (`HAL_ResumeTick`) phải gọi **trước** `SystemClock_Config()`, vì `HAL_RCC_OscConfig()` chờ HSE bằng `HAL_GetTick()`; tick còn tắt thì treo vĩnh viễn. Code tracking FW hiện đang gọi `SystemClock_Config()` trước `SX_RESUME_TICS()` (`sx_sleep.c`), **cần đảo lại**.
+- `SX_RESUME_TICS()` (`HAL_ResumeTick`) phải gọi **trước** `SystemClock_Config()`, vì `HAL_RCC_OscConfig()` chờ HSE bằng `HAL_GetTick()`; tick còn tắt thì treo vĩnh viễn. Tracking FW **đã** gọi `SX_RESUME_TICS()` trước `SystemClock_Config()` (`sx_sleep.c`, đã kiểm tra lại 06/10/2026).
 - Sau khi tắt modem bằng PWRKEY, `mqtt->state` vẫn CONNECTED nếu không reset, nên sau wake `connect()` bị bỏ qua. Tracking FW đã gọi `sx_user_mqtt_force_disconnect()` trước khi tắt SIM; giữ nguyên thứ tự này.
 - Không dùng một instance flash chưa init (từng gây HardFault); luôn đi qua instance thật trong `sx_ex_storage.c`.
 - IWDG bị đóng băng lúc STOP nhờ option byte; nếu tracking FW có IWDG thì cần refresh ngay trước STOP (chưa kiểm tra tracking FW có dùng IWDG không).
@@ -144,10 +160,10 @@ Nguyên tắc: **ngoại vi theo nhu cầu.** Khi sleep thì DeInit hết và c�
 - **Phase 0 — Đọc BQ (ĐÃ XONG phần đọc):** `bq25622.c` đã vào build, đọc được ở `0x6A`, log `BQ VBUS_STAT=100 CHG_STAT=0 -> VBUS present`. **Còn lại:** chưa test rút USB (`000`) và chưa xác nhận part (mục 7a).
 - **Phase 1 — SIM76xx có giờ mạng (ĐÃ XONG, đã test trên board):** `AT+CTZU=1`, `AT+CCLK?`, parse UTC, `sim76xx_get_utc_now()`, đồng bộ RTC ngoài trong `app.c`. Xem mục 6 và 12.1.
 - **Phase 2 — Nguồn flash, IMU, I2C1 (ĐÃ CODE; test trên board gần xong):** cắt/bật flash đạt (`AT+FLASHTEST` 5 và 50 vòng, 0 lỗi); DeInit/Init I2C1 đạt; **cắt nguồn IMU thất bại (kẹp bus) nên đổi sang SUSPEND, đạt** (bus vẫn khỏe, BQ đọc được, resume `rc=0`). **Còn:** reset board kiểm tra filesystem còn nguyên và publish sau khi bật lại I2C (mục 12.4). Chi tiết mục 12.
-- **Phase 3 — Quản lý ngoại vi theo nhu cầu + vòng wake-fake:** lớp `acquire/release`, vòng STOP → I2C1 → đọc `VBUS_STAT` → wake-real hoặc ngủ tiếp, `time_check_vbus`, sửa thứ tự `SX_RESUME_TICS()`/`SystemClock_Config()`, sửa bug `sleep_requested`.
+- **Phase 3 — Quản lý ngoại vi theo nhu cầu + vòng wake-fake (PHẦN LÕI ĐÃ XONG, đã chạy trên board):** vòng STOP → I2C1 → đọc `VBUS_STAT` → wake-real hoặc ngủ tiếp, đếm chu kỳ publish theo RTC, re-enumerate USB khi wake-real, bỏ ADC và EXTI. **Còn:** `time_check_vbus` từ `config.json`, DeInit UART/SPI lúc ngủ + PA4/PB5, lớp `acquire/release`, đo dòng ngủ, test nhiều chu kỳ và các ca biên (mục 13.5).
 - **Phase 4 — Chu kỳ publish theo nhu cầu:** GPS → last_gps từ flash → ghi flash → SIM publish → cập nhật giờ RTC → release hết. Đếm chu kỳ theo RTC.
 - **Phase 5 — Cấu hình sạc BQ:** `reg_write8/16`, `bq25622_config_apply()` (ICHG/VREG/IINDPM/ITERM, tắt watchdog, cấu hình ADC), verify-and-apply lúc boot và mỗi lần phát hiện cắm USB. Cần thông số cell.
-- **Phase 6 — VBAT và cắt xả:** VBAT one-shot từ ADC BQ có timeout + kiểm tra `ADC_DONE_STAT`, thay `board.voltage.v_bat` (`sx_board.c:221`, `app.c:330`), bỏ `services/read_bat`. Đo VBAT khi SIM/GPS tắt. Khi dưới ngưỡng thì tắt tải và shutdown qua `BATFET_CTRL`.
+- **Phase 6 — VBAT và cắt xả:** VBAT one-shot từ ADC BQ có timeout + kiểm tra `ADC_DONE_STAT`, điền `board.voltage.v_bat` (hiện luôn 0.0, mục 2). `services/read_bat` đã hết người gọi (xóa thư mục + dòng trong `synaptix.mk`/`Makefile` nếu muốn). Đo VBAT khi SIM/GPS tắt. Khi dưới ngưỡng thì tắt tải và shutdown qua `BATFET_CTRL`.
 
 Phase 3 phụ thuộc Phase 2; Phase 4 phụ thuộc 1–3; Phase 5 và 6 độc lập với luồng sleep.
 
@@ -161,10 +177,15 @@ Phase 3 phụ thuộc Phase 2; Phase 4 phụ thuộc 1–3; Phase 5 và 6 độc
 6. Mục "log" trong danh sách bật ngoại vi ở chu kỳ publish: đang hiểu là UART log debug (chưa xác nhận).
 7. **Part number thật của chip nguồn** (BQ25628/BQ25628E/BQ25629/khác) và nơi dò USB D+/D- (có nối hay để hở).
 8. **Nguồn cho modem:** pin có nối không, USB dùng cổng PC hay adapter; nguyên nhân modem reset (mục 11.4).
-9. **Trường `time` trong payload GPS lệch +7 giờ so với epoch UTC thật** (là giờ local UTC+7 đưa vào `mktime` rồi coi như UTC; ví dụ publish `1791217206` = 16:20:06 trong khi UTC thật là 09:20:06 = `1791192006`). Lỗi có từ trước. Cần quyết định với backend: giữ hay trừ `7*3600`. **Chưa chốt.**
+9. **Múi giờ: ĐÃ CHỐT (người dùng, 06/10/2026):** dùng giờ Việt Nam (UTC+7), RTC lưu giờ local, trường `time` trong payload là giờ local, nên múi giờ hiện tại là đúng. (Trường `time` là giờ local đưa vào `mktime` rồi coi như UTC nên không phải epoch UTC thật; đây là chủ đích.)
 10. **Ưu tiên giữa giờ mạng và GPS** khi hai nguồn lệch nhau (mục 6).
 11. **BNO055 SUSPEND có giữ calib không và dòng thực tế khi suspend** (chưa đo).
 12. **Đối chiếu schematic về CS (PA4) kéo LOW lúc flash mất nguồn** (code đang làm theo nguyên tắc không đẩy tín hiệu vào chip mất nguồn; chưa đối chiếu mạch).
+13. **Dòng sạc BQ:** firmware chưa ghi cấu hình nào nên chip chạy mặc định (theo datasheet BQ25620/22: ICHG 1040 mA, IINDPM 3.2 A, VREG 4.2 V; **chưa đọc lại từ chip, chưa xác nhận part**). Cần thông số cell và part number trước khi chốt ICHG/IINDPM (mục 13.6).
+14. **`ENTER_SLEEP_TIMEOUT_MS` = 1000 ms** có khiến bản tin "enter sleep" không bao giờ kịp gửi: cố ý bỏ qua hay cần tăng?
+15. **`"vbat":0.000000` trong payload GSM:** backend có chấp nhận không, hay cần bỏ trường này khỏi payload.
+16. **Topic GSM không thấy trên MQTT Explorer** (06/10/2026): log thiết bị cho thấy cả GSM và GPS đều `MQTT publish OK` (QoS 1, có PUBACK), nên nghi phía broker/Explorer (subscribe `vindynamic/tracking/#` đúng lúc, retain=0, ACL, rule backend). **Chưa xác nhận bằng `mosquitto_sub`.**
+17. **IMU resume xong có cần `imu_calib_load()` không** (mục 12.4 #3, vẫn chưa kiểm chứng).
 
 ## 10. Kế hoạch test trên board
 
@@ -177,6 +198,8 @@ Phase 3 phụ thuộc Phase 2; Phase 4 phụ thuộc 1–3; Phase 5 và 6 độc
 - Ghi log flash trong chu kỳ publish rồi tắt lại nhiều lần liên tiếp.
 - Đo dòng ngủ trung bình với các `time_check_vbus` khác nhau. Con số ước tính ~5 µA ở chu kỳ 10 s **chưa đo**.
 - Cắt xả ở ngưỡng đã chọn; kiểm tra tự khởi động lại khi cắm adapter.
+
+**Đã đạt trên board (06/10/2026):** rút USB → vào sleep; vòng wake-fake chạy; cắm USB lúc đang ngủ → wake-real sau 20–30 s kể từ lúc vào sleep; sau re-enumerate máy tính nhận lại CDC + MSC. **Chưa test:** nhiều chu kỳ publish liên tiếp, cắm USB lúc `ENTER_SLEEP`/`WAKE_PUBLISH`, boot chỉ bằng pin, rút rồi cắm ngay (bug `sleep_requested`), đo dòng ngủ.
 ---
 
 ## 11. Phiên debug SIM76xx / MQTT / publish (05/10/2026)
@@ -294,10 +317,71 @@ Lệnh AT test (cổng CDC, kết thúc bằng CR/LF, board không echo; phản 
 - Boot vẫn thấy `AT+COPS=0` trả `+CME ERROR: 100` kèm log `TIMEOUT response`, nhưng mạng vẫn lên và publish OK. Chưa xác nhận bản `fail_on_cme` (mục 11.1 #1) có đang chạy trên board không.
 - `RMC sentence is not valid` in liên tục khi GPS chưa fix (trong nhà), bình thường nhưng làm đầy log.
 - Dòng `LittleFS formatted and mounted successfully` chỉ là thông điệp log chung; code chỉ format khi `lfs_mount` lỗi.
-- `READ_BAT` (ADC MCU) vẫn ~0.74 V, không dùng được (Phase 6 thay bằng VBAT từ BQ).
+- (Đã xử lý ở mục 13.1) `READ_BAT` ADC MCU đã bị xóa khỏi board và app; `v_bat` giờ luôn 0.0 cho tới Phase 6.
 
 ### 12.6 Phase 3 phải tính đến
 
 - IMU suspend/resume thay cho cắt nguồn; `I2C1` phải luôn truy cập được BQ/RTC khi cần.
 - Lớp `acquire/release` bọc `sx_board_i2c1_off/on`, `sx_storage_sleep/wake`, `sx_board_imu_suspend/resume`.
 - Gỡ/tắt `STORAGE_PWR_DEBUG` và các lệnh `AT+FLASH*` khi đo dòng ngủ (UART log cũng bị DeInit lúc ngủ).
+
+---
+
+## 13. Phiên 06/10/2026: Phase 3 (wake-fake), bỏ ADC/EXTI, USB re-enumerate
+
+Mọi file dưới đây là bản đầy đủ đã present. Build bằng `arm-none-eabi-gcc` trong sandbox (qua; muốn build cần `git submodule update --init SynaptiX_FDK/lib/tinyusb` và cài `gcc-arm-none-eabi`); **test trên board do người dùng chạy**. Các file đã đổi: `services/sleepmanager/sx_sleep_manager.c/.h`, `components/sleep/sx_sleep.c/.h`, `board/sx_board.c/.h`, `app/app.c`, `app/app_config.h`.
+
+### 13.1 Thay đổi
+
+| Việc | Chi tiết |
+|---|---|
+| Vòng wake-fake | `sx_sleep_manager_enter()` viết lại (mục 13.2) |
+| Bỏ ADC pin | Xóa `read_vol_pin()`, `s_adc_reader`, `raw_adc/v_adc`, `hal_adc`, `HAL_ADC_Start/Calibration`, `#include adc.h/sx_read_bat.h` trong board; xóa lời gọi `read_vol_pin()` trong `app.c`; xóa `TIME_READ_PIN`. Giữ `voltage_t.v_bat` (V) = 0.0 để payload không đổi định dạng |
+| Bỏ GPIO/EXTI VBUS | Xóa `HAL_GPIO_EXTI_Rising/Falling_Callback`, nhánh `HAL_GPIO_ReadPin(VBUS_PIN)`, `VBUS_PORT/VBUS_PIN`, `SX_VBUS_FROM_BQ`, `sx_sleep_set_exti_wake()`; `tud_umount_cb` không còn `app_request_sleep()` |
+| Đổi tên | `WAKE_REASON_EXTI` → **`WAKE_REASON_VBUS`** (`sx_sleep.h`, `sx_sleep_manager.c`, `app.c`); log "Woke by VBUS (BQ check)" |
+| Macro chu kỳ | `SX_TIME_WAKE_FAKE` = 10000 ms trong `app_config.h` (thay cho macro tạm `SX_TIME_CHECK_VBUS_MS` trong `sx_sleep_manager.h`) |
+| USB | re-enumerate khi wake-real (mục 13.3) |
+
+### 13.2 Vòng wake-fake (`sx_sleep_manager_enter`)
+
+1. Tắt GPS, SIM; `sx_storage_sleep()`; `sx_board_imu_suspend()` (khi I2C1 còn bật).
+2. Lặp: `sx_board_i2c1_off()` → đặt RTC wakeup `min(check, còn lại)` giây → STOP → hủy RTC wakeup.
+3. Thời gian đã trôi = `max(lịch RTC trong chip, tổng các chu kỳ RTC hoàn tất)`. Chỉ cộng chu kỳ khi `wake_reason == WAKE_REASON_RTC` (wake lạ thì lặp lại).
+4. Đủ `sleep_ms` → `i2c1_on`, `wake_reason = WAKE_REASON_RTC` (sang `WAKE_PUBLISH`).
+5. Chưa đủ → `i2c1_on` (lỗi thì tiếp tục ngủ, **không bao giờ coi lỗi I2C là có USB**) → `bq25622_refresh()` đọc `VBUS_STAT` trực tiếp, không qua debounce → có USB thì `sx_board_imu_resume()`, `wake_reason = WAKE_REASON_VBUS`; không thì lặp.
+6. Wake-fake chỉ bật I2C1; SIM/GPS/flash/IMU/USB chỉ bật ở wake-real hoặc chu kỳ publish.
+
+Log mẫu: `wake-fake: VBUS_STAT=4 -> USB present, wake-real`, `<<< Woke from STOP mode (VBUS after 30 s)`, `Woke by VBUS (BQ check)`.
+
+### 13.3 Bài học: USB phải re-enumerate sau khi thức vì cắm USB
+
+- Triệu chứng: wake-real chạy đúng nhưng máy tính báo "unknown USB device"; chỉ nhận lại khi reset board.
+- Nguyên nhân (suy luận, phù hợp log): host bắt đầu enumerate ngay lúc cắm, MCU đang STOP (NVIC USB tắt, clock dừng) nên không trả lời, host bỏ cuộc. Firmware thức dậy sau tối đa một chu kỳ wake-fake.
+- **Không dùng `tud_mounted()` làm điều kiện.** Log cho thấy `tud_mounted=1 tud_connected=1` ngay cả khi host đã bỏ: stack không biết đã rút cáp (không có VBUS sensing, IRQ USB tắt trong STOP), còn trạng thái cấu hình cũ (và log `USB tiny resumed`).
+- Cách sửa (đã chạy được): luôn `sx_usb_tiny_msc_disconnect()` → `sx_delay_ms(500)` → `sx_usb_tiny_msc_connect()` khi xử lý `usb_connect_pending`, kèm log `USB re-enumerate (tud_mounted=.. tud_connected=..)`. Sau đó `USB tiny connected` và `CDC line state` xuất hiện, máy tính nhận lại. Cùng kiểu với `_remount()` trong `sx_user_msc.c`.
+- Độ trễ nhận USB tối đa bằng `SX_TIME_WAKE_FAKE` và mỗi lần cắm có một lần "nháy" kết nối: là giới hạn của thiết kế polling.
+
+### 13.4 Điều đã xác nhận / chưa
+
+- **Đã xác nhận trên board:** rút USB vào sleep; vòng wake-fake chạy và đọc được BQ sau khi bật lại I2C1; cắm USB lúc ngủ thì wake-real; USB nhận lại sau re-enumerate (người dùng báo "detect rất mượt"). Chưa ghi lại chính xác khoảng cách giữa các lần wake-fake.
+- **Chưa kiểm chứng:** IMU có giữ calib sau suspend không; dòng ngủ thực tế (con số ~5 µA chỉ là ước tính); filesystem sau nhiều chu kỳ cắt nguồn flash (mục 12.4); `time`/`date` sau nhiều lần bật/tắt I2C1.
+
+### 13.5 Việc còn lại của Phase 3 (đề xuất thứ tự)
+
+1. Test chu kỳ publish liên tiếp (≥ 3 vòng STOP → wake-fake → RTC wake → `WAKE_PUBLISH` → sleep) không treo, chu kỳ không dài dần, payload `time`/`date` đúng.
+2. Ca biên: cắm USB lúc `ENTER_SLEEP`; cắm USB lúc `WAKE_PUBLISH` (cần thấy `USB plugged during WAKE_PUBLISH - full restart`); boot chỉ bằng pin; rút rồi cắm lại ngay.
+3. Đóng 2 việc của Phase 2 (mục 12.4).
+4. `time_check_vbus` từ `config.json` → gán `check_ms` của sleep manager.
+5. DeInit UART/SPI/I2C lúc ngủ (UART log sau cùng), PA4/PB5 về LOW/analog; đặt `SX_WAKE_FAKE_LOG=0`, `STORAGE_PWR_DEBUG=0` rồi đo dòng ngủ thật.
+6. Tùy chọn: lớp `acquire/release`; đổi `imu_calib_load()` sau resume nếu mất calib.
+
+### 13.6 Dòng sạc BQ hiện tại
+
+- Không có chỗ nào gọi `bq25622_config_apply()` (chỉ `bq25622_init()` ở `sx_board.c` và poll/refresh để **đọc**). Chưa ghi thanh ghi nào nên chip ở default mode với giá trị mặc định theo datasheet BQ25620/22 (ICHG 1040 mA, VREG 4.2 V, IINDPM 3.2 A) — **theo datasheet, chưa đọc lại từ chip, chưa xác nhận part**.
+- Giới hạn thực tế khi cắm USB: `VBUS_STAT=100b` tương ứng IINDPM 500 mA theo bảng 8-2 BQ25629 (chưa rõ áp dụng cho chip trên board).
+- `BQ25622_CFG_DEFAULT` trong `bq25622.h` (4.2 V, 480 mA, ITERM 60 mA, IINDPM KEEP, cutoff 2.9 V) chỉ là giá trị dự kiến, chưa áp lên chip.
+- **Không ghi thanh ghi BQ cho đến khi xác nhận part (mục 7a):** ghi bất kỳ thanh ghi nào đưa chip sang host mode + watchdog; watchdog hết thì ICHG giảm một nửa. Có thể thêm lệnh AT chỉ-đọc in `ICHG/IINDPM/VREG` để biết giá trị thật (chưa làm).
+
+### 13.7 Quan sát khác
+
+- `RMC sentence is not valid` in liên tục khi GPS chưa fix: bình thường nhưng làm đầy log.

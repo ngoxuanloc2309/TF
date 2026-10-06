@@ -68,7 +68,7 @@ void sx_sleep_manager_enter(sx_sleep_manager_t *mgr)
     uint32_t sleep_sec = sleep_ms / 1000U;
     if (sleep_sec == 0) sleep_sec = 1;
 
-    uint32_t check_sec = ((mgr->check_ms > 0) ? mgr->check_ms : SX_TIME_CHECK_VBUS_MS) / 1000U;
+    uint32_t check_sec = ((mgr->check_ms > 0) ? mgr->check_ms : SX_TIME_WAKE_FAKE) / 1000U;
     if (check_sec == 0)         check_sec = 1;
     if (check_sec > sleep_sec)  check_sec = sleep_sec;
 
