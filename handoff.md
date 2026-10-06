@@ -123,7 +123,7 @@ Nguyên tắc: **ngoại vi theo nhu cầu.** Khi sleep thì DeInit hết và c�
 - Bộ AT manual dòng A76XX có `AT+CCLK`, `AT+CTZU`, `AT+CTZR`, `AT+CNTP` (NTP). A7680C thuộc dòng Cat 1 cùng hãng, **nhưng chưa có tài liệu nào xác nhận thẳng A7680C nằm trong đúng bộ manual đó**: cần kiểm chứng trên board.
 - Rủi ro: NITZ phụ thuộc nhà mạng (nếu không gửi giờ thì `CCLK?` trả giờ mặc định chưa đồng bộ); `AT+CNTP` cần đã có kết nối dữ liệu và một NTP server.
 - Kiểm chứng trước khi code (gửi tay, lúc SIM đã đăng ký mạng): `AT+CGMM`, `AT+CTZU=1`, `AT+CCLK?`.
-- Thứ tự nguồn giờ đề xuất: NITZ ưu tiên, GPS dự phòng. Ghi RTC ngoài cần `acquire` I2C1. **Hiện code: nguồn nào đến sau thì ghi đè** (GPS chỉ ghi khi có fix); chưa chốt thứ tự ưu tiên.
+- Thứ tự nguồn giờ đề xuất: NITZ ưu tiên, GPS dự phòng. Ghi RTC ngoài cần `acquire` I2C1. ****ĐÃ CHỐT (người dùng, 06/10/2026): giờ mạng (SIM) ưu tiên hơn GPS.** Code (`app.c`): `rtc_sync_from_gps()` chỉ ghi RTC khi phiên modem hiện tại chưa áp được giờ mạng (`rtc_net_time_current()`, so `sim76xx.clk_utc` với `s_net_ok_utc`); mỗi mẫu `CCLK` mới luôn ghi đè giờ GPS đã ghi trước đó. `clk_valid` bị xóa mỗi lần modem khởi động lại nên mỗi chu kỳ publish bắt đầu lại từ "chưa áp". GPS là dự phòng (SIM không có NITZ, hoặc ghi RTC từ giờ mạng lỗi 3 lần). **Hệ quả cần biết:** giờ mạng chỉ lấy một lần mỗi phiên modem, nên khi `FULL_POWER` chạy lâu thì RTC có thể trôi dần mà GPS không còn hiệu chỉnh (số đo của người dùng ~38 s sau vài chục phút, chưa kiểm chứng độc lập). Đã build qua, **chưa test trên board**.
 - **Kết quả kiểm chứng trên board (06/10/2026, SIM `m3-world`):** `AT+CGMM` = `A7680C-LANS`; `AT+CTZU=1` OK; `AT+CCLK?` = `+CCLK: "26/10/05,16:20:01+28"` (zone 28 quý giờ = UTC+7, NITZ có giờ); parse đúng, RTC ngoài được ghi `16:20:01 05/10/2026`, các publish sau đó có `time`/`date` đúng. Với SIM/nhà mạng khác chưa test.
 
 ## 7a. Chip nguồn thực tế trên board (phát hiện khi test Phase 0)
@@ -178,7 +178,7 @@ Phase 3 phụ thuộc Phase 2; Phase 4 phụ thuộc 1–3; Phase 5 và 6 độc
 7. **Part number thật của chip nguồn** (BQ25628/BQ25628E/BQ25629/khác) và nơi dò USB D+/D- (có nối hay để hở).
 8. **Nguồn cho modem:** pin có nối không, USB dùng cổng PC hay adapter; nguyên nhân modem reset (mục 11.4).
 9. **Múi giờ: ĐÃ CHỐT (người dùng, 06/10/2026):** dùng giờ Việt Nam (UTC+7), RTC lưu giờ local, trường `time` trong payload là giờ local, nên múi giờ hiện tại là đúng. (Trường `time` là giờ local đưa vào `mktime` rồi coi như UTC nên không phải epoch UTC thật; đây là chủ đích.)
-10. **Ưu tiên giữa giờ mạng và GPS** khi hai nguồn lệch nhau (mục 6).
+10. ~~Ưu tiên giữa giờ mạng và GPS~~ **ĐÃ CHỐT 06/10/2026: giờ mạng (SIM) ưu tiên, GPS dự phòng** (mục 6). Còn mở: có cần đọc lại `CCLK` định kỳ khi `FULL_POWER` chạy lâu để RTC không trôi không.
 11. **BNO055 SUSPEND có giữ calib không và dòng thực tế khi suspend** (chưa đo).
 12. **Đối chiếu schematic về CS (PA4) kéo LOW lúc flash mất nguồn** (code đang làm theo nguyên tắc không đẩy tín hiệu vào chip mất nguồn; chưa đối chiếu mạch).
 13. **Dòng sạc BQ:** firmware chưa ghi cấu hình nào nên chip chạy mặc định (theo datasheet BQ25620/22: ICHG 1040 mA, IINDPM 3.2 A, VREG 4.2 V; **chưa đọc lại từ chip, chưa xác nhận part**). Cần thông số cell và part number trước khi chốt ICHG/IINDPM (mục 13.6).

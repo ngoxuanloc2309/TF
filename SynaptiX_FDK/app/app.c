@@ -110,7 +110,9 @@ static config_json_t config_json = { .s_time_publish = TIME_PUBLISH_FULL_PW_MODE
  *  - rx8130ce_time_t.month is 1..12 (driver rejects 0). struct tm uses tm_mon 0..11: convert at the edges.
  *    (Old code stored tm_mon 0..11 directly: January was rejected and every other month was off by one.)
  *  - week is a one-hot bitmask (RX8130CE_WEEK_xxx), not a number.
- *  - Sources: network time (AT+CCLK?) and GPS RMC (only with a valid fix). Last one wins.
+ *  - Sources: network time (AT+CCLK?) has priority; GPS RMC (only with a valid fix) is a fallback.
+ *    GPS writes the RTC only while the current modem session has no network time applied
+ *    (see rtc_net_time_current()). A new CCLK sample always overwrites whatever GPS wrote earlier.
  * ====================================================================== */
 #define APP_RTC_TZ_OFFSET_S     (7 * 3600)
 #define APP_RTC_MIN_YEAR        2024
@@ -168,12 +170,24 @@ static int rtc_set_local_secs(int64_t local)
     return rc;
 }
 
-/* GPS -> RTC. gps->tim stays stale after an invalid RMC, so require a fix. */
+/* Network time priority. s_net_ok_utc = clk_utc of the CCLK sample that was successfully written to the RTC.
+ * sim76xx clears clk_valid whenever the modem (re)starts, so every modem session starts "not applied" and
+ * GPS can act as the fallback until a network sample is written. */
+static uint32_t s_net_ok_utc = 0;
+
+static int rtc_net_time_current(void)
+{
+    sim76xx_t *m = &g_app.board->sim76xx;
+    return m->clk_valid && m->clk_utc == s_net_ok_utc;
+}
+
+/* GPS -> RTC (fallback only). gps->tim stays stale after an invalid RMC, so require a fix. */
 static void rtc_sync_from_gps(void)
 {
     sx_gps_t *gps = &g_app.board->gps;
     if (gps->latitude == 0.0f || gps->longtitude == 0.0f) return;
     if (gps->tim.tm_mday < 1) return;
+    if (rtc_net_time_current()) return;      /* network time already applied this session: it wins */
     /* gps->tim is already UTC+7 (gps.c); mday may be 32 at month end, rtc_tm_to_secs() normalises it */
     int rc = rtc_set_local_secs(rtc_tm_to_secs(&gps->tim));
     if (rc != RX8130CE_OK) log_warn(TAG, "RTC sync from GPS failed (rc=%d)", rc);
@@ -193,13 +207,14 @@ static void app_sync_rtc_from_modem(void)
     int rc = rtc_set_local_secs((int64_t)utc + APP_RTC_TZ_OFFSET_S);
     if (rc == RX8130CE_OK) {
         s_applied_snap = m->clk_utc;
+        s_net_ok_utc   = m->clk_utc;         /* from now on GPS must not overwrite this session */
         s_tries = 0;
         log_info(TAG, "RTC synced from network time: %02d:%02d:%02d %02d/%02d/20%02d (UTC+7)",
                  g_app.time.hour, g_app.time.min, g_app.time.sec,
                  g_app.time.day, g_app.time.month, g_app.time.year);
     } else if (++s_tries >= 3) {
         log_warn(TAG, "RTC sync from network time failed (rc=%d) - giving up on this sample", rc);
-        s_applied_snap = m->clk_utc;
+        s_applied_snap = m->clk_utc;         /* s_net_ok_utc stays unchanged: GPS fallback remains allowed */
         s_tries = 0;
     }
 }
