@@ -22,17 +22,17 @@
 
 /* Wake-fake period (ms): during sleep the MCU wakes this often, turns on ONLY I2C1 and reads VBUS_STAT
  * from the BQ to see if USB was plugged in. Worst-case delay before a plugged USB is noticed. */
-#define SX_TIME_WAKE_FAKE   10000U
+#define SX_TIME_WAKE_FAKE               10000U
 
-#define T_ALIVE_MS              30000U      /* MCU stay-alive after wake   */
-#define GPS_TIMEOUT_MS          130000U      /* GPS fix timeout (ms)        */
+#define T_ALIVE_MS                      30000U      /* MCU stay-alive after wake   */
+#define GPS_TIMEOUT_MS                  130000U      /* GPS fix timeout (ms)        */
 
 #define TIME_PUBLISH_FULL_PW_MODE_MS    60000U
 
-#define ENTER_SLEEP_TIMEOUT_MS  10000U
+#define ENTER_SLEEP_TIMEOUT_MS          10000U
 
 
-#define DELTA_T                 100U
+#define DELTA_T                         100U
 
 /* ------------------------------------------------------------------ */
 /*  W25Q128 Partition Table (16MB total) */

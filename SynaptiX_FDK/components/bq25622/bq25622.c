@@ -2,7 +2,7 @@
 #include "logger.h"
 #include "sx_delay.h"
 
-static const char *TAG = "BQ25622";
+static const char *TAG = "BQ25628";
 
 static uint8_t vbus_stat_is_present(uint8_t stat)
 {
@@ -54,7 +54,7 @@ int bq25622_init(bq25622_t *dev, sx_i2c_t *i2c)
         return -1;
     }
 
-    /* Diagnostic dump (read-only). If the chip at this address is NOT a BQ2562x these
+    /* Diagnostic dump (read-only). If the chip at this address is NOT a BQ25628/9 these
      * values are meaningless, so do not trust PN/VBUS_STAT below until they look sane. */
     {
         uint8_t s0 = 0xEE, s1 = 0xEE;
@@ -66,9 +66,11 @@ int bq25622_init(bq25622_t *dev, sx_i2c_t *i2c)
     dev->online      = 1;
     dev->part_number = (pi & BQ25622_PN_MASK) >> BQ25622_PN_SHIFT;
     log_info(TAG, "found: PN=%u (%s) rev=%u", dev->part_number,
-             dev->part_number == BQ25622_PN_BQ25622 ? "BQ25622" :
-             dev->part_number == BQ25622_PN_BQ25620 ? "BQ25620" : "unknown",
+             dev->part_number == BQ25622_PN_BQ25628 ? "BQ25628" :
+             dev->part_number == BQ25622_PN_BQ25629 ? "BQ25629" : "unknown",
              pi & 0x07U);
+    if (!(dev->part_number == BQ25622_PN_BQ25628 || dev->part_number == BQ25622_PN_BQ25629))
+        log_warn(TAG, "PN=%u is not BQ25628/BQ25629: register WRITES are disabled", dev->part_number);
 
     if (bq25622_read_status(dev) == 0) {
         dev->present = vbus_stat_is_present(dev->vbus_stat);
@@ -164,6 +166,17 @@ static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+/* Every API that WRITES goes through this: the register map in this driver is the BQ25628/9 one. */
+static int part_writable(const bq25622_t *dev, const char *who)
+{
+    if (dev->online &&
+        (dev->part_number == BQ25622_PN_BQ25628 || dev->part_number == BQ25622_PN_BQ25629))
+        return 1;
+    log_warn(TAG, "%s refused: chip not identified as BQ25628/9 (online=%u PN=%u)",
+             who, dev->online, dev->part_number);
+    return 0;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Configuration                                                              */
 /* ------------------------------------------------------------------------ */
@@ -172,26 +185,27 @@ int bq25622_config_apply(bq25622_t *dev)
 {
     int rc = 0;
     dev->cfg_ok = 0;
+    if (!part_writable(dev, "config_apply")) return -1;
 
     /* 1) FIRST write: watchdog off (+ EN_CHG). The first write of any register
      *    enters host mode and would start the 50 s watchdog; writing WATCHDOG=00
      *    here means it never runs. WD_RST (bit2) is left at 0. */
-    uint8_t ctrl1_mask = (uint8_t)(BQ25622_CTRL1_EN_CHG | BQ25622_CTRL1_WATCHDOG_MASK);
-    uint8_t ctrl1_val  = dev->cfg.en_chg ? BQ25622_CTRL1_EN_CHG : 0U;
-    rc |= reg8_update(dev, BQ25622_REG_CHARGER_CTRL_1, ctrl1_mask, ctrl1_val,
+    uint8_t ctrl0_mask = (uint8_t)(BQ25622_CTRL0_EN_CHG | BQ25622_CTRL0_WATCHDOG_MASK);
+    uint8_t ctrl0_val  = dev->cfg.en_chg ? BQ25622_CTRL0_EN_CHG : 0U;
+    rc |= reg8_update(dev, BQ25622_REG_CHARGER_CTRL_0, ctrl0_mask, ctrl0_val,
                       "WATCHDOG=off,EN_CHG");
 
     /* 2) VREG = mV/10, bits [11:3]. 4200 mV -> 0x1A4 -> reg 0x0D20 (= POR). */
     uint32_t vreg = clamp_u32((uint32_t)dev->cfg.vreg, 3500U, 4800U) / 10U;
     rc |= reg16_update(dev, BQ25622_REG_VREG, 0x0FF8U, (uint16_t)(vreg << 3), "VREG");
 
-    /* 3) ICHG = mA/80, bits [11:6]. Enum values are exact multiples of 80. */
-    uint32_t ichg = clamp_u32((uint32_t)dev->cfg.ichg, 80U, 3520U) / 80U;
-    rc |= reg16_update(dev, BQ25622_REG_ICHG, 0x0FC0U, (uint16_t)(ichg << 6), "ICHG");
+    /* 3) ICHG = mA/40, bits [10:5] (BQ25628: 40 mA..2000 mA). Bits [15:11] and [4:0] are reserved. */
+    uint32_t ichg = clamp_u32((uint32_t)dev->cfg.ichg, 40U, 2000U) / 40U;
+    rc |= reg16_update(dev, BQ25622_REG_ICHG, 0x07E0U, (uint16_t)(ichg << 5), "ICHG");
 
-    /* 4) ITERM = mA/10, bits [8:3]. */
-    uint32_t iterm = clamp_u32((uint32_t)dev->cfg.iterm, 10U, 620U) / 10U;
-    rc |= reg16_update(dev, BQ25622_REG_ITERM, 0x01F8U, (uint16_t)(iterm << 3), "ITERM");
+    /* 4) ITERM = mA/5, bits [7:2] (BQ25628: 5 mA..310 mA). */
+    uint32_t iterm = clamp_u32((uint32_t)dev->cfg.iterm, 5U, 310U) / 5U;
+    rc |= reg16_update(dev, BQ25622_REG_ITERM, 0x00FCU, (uint16_t)(iterm << 2), "ITERM");
 
     /* 5) IINDPM = mA/20, bits [11:4] — only when configured. It falls back to
      *    3.2 A on every adapter removal, so call config_apply() after each plug. */
@@ -201,7 +215,7 @@ int bq25622_config_apply(bq25622_t *dev)
     }
 
     /* 6) ADC channels: keep VBUS + VBAT only, TS off (ADC then works down to
-     *    VBAT_LOWV instead of stopping at 3.2 V). */
+     *    VBAT_LOWV (2.7..2.9 V) instead of stopping at 3.2 V). */
     rc |= reg8_update(dev, BQ25622_REG_ADC_DISABLE_0, 0xFFU,
                       (uint8_t)BQ25622_ADC_DIS_MASK, "ADC channels");
 
@@ -211,14 +225,15 @@ int bq25622_config_apply(bq25622_t *dev)
     }
     dev->cfg_ok = 1;
     log_info(TAG, "config OK: VREG=%u mV ICHG=%u mA ITERM=%u mA",
-             (unsigned)(vreg * 10U), (unsigned)(ichg * 80U), (unsigned)(iterm * 10U));
+             (unsigned)(vreg * 10U), (unsigned)(ichg * 40U), (unsigned)(iterm * 5U));
     return 0;
 }
 
 int bq25622_set_charge_enable(bq25622_t *dev, uint8_t enable)
 {
-    return reg8_update(dev, BQ25622_REG_CHARGER_CTRL_1, BQ25622_CTRL1_EN_CHG,
-                       enable ? BQ25622_CTRL1_EN_CHG : 0U, "EN_CHG");
+    if (!part_writable(dev, "set_charge_enable")) return -1;
+    return reg8_update(dev, BQ25622_REG_CHARGER_CTRL_0, BQ25622_CTRL0_EN_CHG,
+                       enable ? BQ25622_CTRL0_EN_CHG : 0U, "EN_CHG");
 }
 
 /* ------------------------------------------------------------------------ */
@@ -228,6 +243,7 @@ int bq25622_set_charge_enable(bq25622_t *dev, uint8_t enable)
 int bq25622_measure(bq25622_t *dev, uint16_t *vbat_mv, uint16_t *vbus_mv)
 {
     uint8_t r = 0;
+    if (!part_writable(dev, "measure")) return -1;     /* it writes ADC_CONTROL */
 
     /* Reading FLAG0 clears ADC_DONE_FLAG, so a later "1" means a NEW conversion.
      * (The ADC result registers never clear — a stale value looks valid.) */
@@ -292,6 +308,7 @@ done:;
 
 int bq25622_battery_disconnect(bq25622_t *dev)
 {
+    if (!part_writable(dev, "battery_disconnect")) return -1;
     /* Shutdown is only accepted when VBUS is absent; with an adapter the chip
      * ignores it and clears BATFET_CTRL back to 00. Check first. */
     if (bq25622_read_status(dev) != 0)
@@ -301,19 +318,19 @@ int bq25622_battery_disconnect(bq25622_t *dev)
         return -2;
     }
 
-    uint8_t mask = (uint8_t)(BQ25622_CTRL3_BATFET_CTRL_MASK | BQ25622_CTRL3_BATFET_DLY);
+    uint8_t mask = (uint8_t)(BQ25622_CTRL2_BATFET_CTRL_MASK | BQ25622_CTRL2_BATFET_DLY);
     uint8_t val  = (uint8_t)(BQ25622_BATFET_SHUTDOWN |
                              (dev->cfg.batfet_dly == BQ25622_BATFET_DLY_12S5
-                              ? BQ25622_CTRL3_BATFET_DLY : 0U));
+                              ? BQ25622_CTRL2_BATFET_DLY : 0U));
     uint8_t cur = 0;
-    if (reg_read8(dev, BQ25622_REG_CHARGER_CTRL_3, &cur) != 0)
+    if (reg_read8(dev, BQ25622_REG_CHARGER_CTRL_2, &cur) != 0)
         return -1;
 
     log_warn(TAG, "BATTERY DISCONNECT (BATFET_CTRL=shutdown, delay %s) — board will lose power",
              dev->cfg.batfet_dly == BQ25622_BATFET_DLY_12S5 ? "12.5 s" : "25 ms");
 
     /* No read-back: with a 25 ms delay the chip (and I2C) may already be gone. */
-    if (reg_write8(dev, BQ25622_REG_CHARGER_CTRL_3, (uint8_t)((cur & ~mask) | val)) != 0)
+    if (reg_write8(dev, BQ25622_REG_CHARGER_CTRL_2, (uint8_t)((cur & ~mask) | val)) != 0)
         return -1;
     return 0;
 }
@@ -356,6 +373,65 @@ int bq25622_check_vbat_cutoff(bq25622_t *dev)
         return 0;
 
     return (bq25622_battery_disconnect(dev) == 0) ? 1 : -1;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Read-only diagnostic dump                                                  */
+/* ------------------------------------------------------------------------ */
+
+int bq25622_dump_regs(bq25622_t *dev)
+{
+    uint8_t  pi = 0xEE, s0 = 0xEE, s1 = 0xEE, f0 = 0xEE, fl0 = 0xEE, fl1 = 0xEE, ffl = 0xEE;
+    uint8_t  chg = 0xEE, c0 = 0xEE, c2 = 0xEE, c3 = 0xEE, ntc = 0xEE;
+    uint16_t ich = 0xEEEE, vrg = 0xEEEE, iin = 0xEEEE, ipc = 0xEEEE, itm = 0xEEEE;
+    int bad = 0;
+
+    bad |= reg_read8(dev, BQ25622_REG_PART_INFO,      &pi);
+    bad |= reg_read8(dev, BQ25622_REG_CHARGER_STATUS_0, &s0);
+    bad |= reg_read8(dev, BQ25622_REG_CHARGER_STATUS_1, &s1);
+    bad |= reg_read8(dev, BQ25622_REG_FAULT_STATUS_0, &f0);
+    /* FLAG registers clear on read: this is the one-time snapshot of what happened since POR. */
+    bad |= reg_read8(dev, BQ25622_REG_CHARGER_FLAG_0, &fl0);
+    bad |= reg_read8(dev, BQ25622_REG_CHARGER_FLAG_1, &fl1);
+    bad |= reg_read8(dev, BQ25622_REG_FAULT_FLAG_0,   &ffl);
+    bad |= reg_read16(dev, BQ25622_REG_ICHG,    &ich);
+    bad |= reg_read16(dev, BQ25622_REG_VREG,    &vrg);
+    bad |= reg_read16(dev, BQ25622_REG_IINDPM,  &iin);
+    bad |= reg_read16(dev, BQ25622_REG_IPRECHG, &ipc);
+    bad |= reg_read16(dev, BQ25622_REG_ITERM,   &itm);
+    bad |= reg_read8(dev, BQ25622_REG_CHARGE_CONTROL, &chg);
+    bad |= reg_read8(dev, BQ25622_REG_CHARGER_CTRL_0, &c0);
+    bad |= reg_read8(dev, BQ25622_REG_CHARGER_CTRL_2, &c2);
+    bad |= reg_read8(dev, BQ25622_REG_CHARGER_CTRL_3, &c3);
+    bad |= reg_read8(dev, BQ25622_REG_NTC_CONTROL_0,  &ntc);
+
+    log_info(TAG, "dump: PART_INFO=0x%02X PN=%u REV=%u", pi,
+             (unsigned)((pi & BQ25622_PN_MASK) >> BQ25622_PN_SHIFT), (unsigned)(pi & 0x07U));
+    log_info(TAG, "dump: STATUS0=0x%02X STATUS1=0x%02X (CHG_STAT=%u VBUS_STAT=%u) FAULT0=0x%02X "
+                  "(VBUS_F=%u BAT_F=%u SYS_F=%u OTG_F=%u TSHUT=%u TS_STAT=%u)",
+             s0, s1,
+             (unsigned)((s1 & BQ25622_CHG_STAT_MASK) >> BQ25622_CHG_STAT_SHIFT),
+             (unsigned)(s1 & BQ25622_VBUS_STAT_MASK), f0,
+             (unsigned)((f0 >> 7) & 1U), (unsigned)((f0 >> 6) & 1U), (unsigned)((f0 >> 5) & 1U),
+             (unsigned)((f0 >> 4) & 1U), (unsigned)((f0 >> 3) & 1U), (unsigned)(f0 & 0x07U));
+    log_info(TAG, "dump: FLAG0=0x%02X FLAG1=0x%02X FAULT_FLAG0=0x%02X (cleared by this read; WD_FLAG=%u)",
+             fl0, fl1, ffl, (unsigned)(fl0 & 1U));
+    log_info(TAG, "dump: ICHG=%u mA VREG=%u mV IINDPM=%u mA IPRECHG=%u mA ITERM=%u mA",
+             (unsigned)(((ich >> 5) & 0x3FU) * 40U), (unsigned)(((vrg >> 3) & 0x1FFU) * 10U),
+             (unsigned)(((iin >> 4) & 0xFFU) * 20U), (unsigned)(((ipc >> 3) & 0x1FU) * 10U),
+             (unsigned)(((itm >> 2) & 0x3FU) * 5U));
+    {
+        uint8_t pk = (uint8_t)(c3 >> BQ25622_CTRL3_IBAT_PK_SHIFT);
+        log_info(TAG, "dump: CHG_CTRL=0x%02X CTRL0=0x%02X (EN_CHG=%u WATCHDOG=%u) CTRL2=0x%02X "
+                      "CTRL3=0x%02X (IBAT_PK=%s VBAT_UVLO=%s) NTC0=0x%02X (TS_IGNORE=%u)",
+                 chg, c0, (unsigned)((c0 >> 5) & 1U), (unsigned)(c0 & BQ25622_CTRL0_WATCHDOG_MASK),
+                 c2, c3,
+                 pk == 3U ? "12A" : (pk == 2U ? "6A" : "rsvd"),
+                 (c3 & BQ25622_CTRL3_VBAT_UVLO) ? "1.8V" : "2.2V",
+                 ntc, (unsigned)((ntc >> 7) & 1U));
+    }
+    if (bad) log_warn(TAG, "dump: some register reads FAILED (shown as 0xEE/0xEEEE)");
+    return bad ? -1 : 0;
 }
 
 bq25622_event_t bq25622_poll(bq25622_t *dev, uint32_t ts_ms)

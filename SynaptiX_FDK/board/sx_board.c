@@ -108,7 +108,7 @@ static void i2c1_scan_debug(void)
     for (uint8_t a = 0x08; a < 0x78; a++) {
         if (sx_i2c_is_device_ready(&board.i2c1, (uint16_t)(a << 1), 1, 10) == 0) {
             log_info(TAG, "I2C1 scan: ACK at 0x%02X%s", a,
-                     a == 0x6B ? "  <- BQ25622" :
+                     a == 0x6A ? "  <- BQ25628" :
                      a == 0x32 ? "  <- RX8130CE" :
                      (a == 0x28 || a == 0x29) ? "  <- BNO055" : "");
             found++;
@@ -116,8 +116,9 @@ static void i2c1_scan_debug(void)
     }
     log_info(TAG, "I2C1 scan done: %u device(s)", found);
     if (!board.bq.online) {
-        log_info(TAG, "BQ25622 retry init after scan...");
-        bq25622_init(&board.bq, &board.i2c1);
+        log_info(TAG, "BQ25628 retry init after scan...");
+        if (bq25622_init(&board.bq, &board.i2c1) == 0)
+            bq25622_dump_regs(&board.bq);        /* read-only, FLAG regs clear on read: once only */
     }
 }
 #endif
@@ -177,8 +178,9 @@ void sx_board_init(void)
 
     // I2C
     sx_i2c_init(&board.i2c1, &sx_i2c_ops, &hi2c1);
-    // BQ25622 (read-only, Phase 0)
-    bq25622_init(&board.bq, &board.i2c1);
+    // BQ25628 (read-only; nothing is written to the chip yet)
+    if (bq25622_init(&board.bq, &board.i2c1) == 0)
+        bq25622_dump_regs(&board.bq);            /* read-only snapshot, FLAG regs clear on read: boot only */
     // RTC
     sx_gpio_init(&s_rtc_pwr,   &sx_gpio_ops, &s_rtc_pwr_pin);
     rx8130ce_init(&board.rtc,  &board.i2c1, &s_rtc_pwr);
