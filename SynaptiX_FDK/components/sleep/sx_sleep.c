@@ -127,15 +127,3 @@ sx_sleep_t* sx_sleep_get_instance(void)
 {
     return s_instance;
 }
-
-
-void sx_sleep_set_exti_wake(void)
-{
-    log_debug(TAG, "sx_sleep_set_exti_wake() called!");
-    if (s_instance) {
-        s_instance->wake_reason = WAKE_REASON_EXTI;
-        log_info(TAG, "[EXTI] Set wake_reason = WAKE_REASON_EXTI");
-    } else {
-        log_error(TAG, "[EXTI] ERROR: s_instance is NULL!");
-    }
-}

@@ -19,19 +19,17 @@ extern "C" {
 #include "sx_W25Q128.h"
 #include "sx_ex_storage.h"
 #include "sx_usb_tiny_cdc.h"
-#include "adc.h"
 #include "spi.h"
 #include "i2c.h"
 #include "sx_ex_rtc.h"
 #include "bno055.h"
 #include "sx_filter.h"
-#include "sx_read_bat.h"
 #include "bq25622.h"
 
+/* v1.4 has no MCU ADC for the battery: VBAT comes from the charger over I2C1 (BQ ADC, Phase 6).
+ * v_bat stays 0.0 until that is implemented. */
 typedef struct {
-    volatile uint32_t raw_adc;
-    volatile float v_adc;
-    volatile float v_bat;
+    volatile float v_bat;       /* volts */
 }voltage_t;
 
 typedef struct Board{
@@ -48,7 +46,6 @@ typedef struct Board{
     sx_i2c_t    rtc_i2c;
     bno055_t    imu;
     bq25622_t   bq;
-    sx_adc_reader_t s_adc_reader;
 }Board_t;
 
 /*  MODE USB    */
@@ -80,15 +77,7 @@ typedef struct Board{
 #define EN_BAT_DISCHARGE_Port    EN_DISCHARGE_GPIO_Port
 #define EN_BAT_DISCHARGE_PIN     EN_DISCHARGE_Pin
 
-#define VBUS_PORT                GPIOC
-#define VBUS_PIN                 GPIO_PIN_1
-
-/* Board v1.4 has NO GPIO for USB detection: the only source is VBUS_STAT of the charger (I2C1).
- * 1 = PC1 is not used for VBUS: its EXTI is disabled, check_charge() follows the charger, and
- *     the PC1 EXTI callbacks are compiled out.   0 = old v1.2 behaviour (PC1 wired to VBUS). */
-#ifndef SX_VBUS_FROM_BQ
-#define SX_VBUS_FROM_BQ          1
-#endif
+/* Board v1.4 has NO GPIO for USB detection (no PC1 / EXTI): the only source is VBUS_STAT of the charger (I2C1). */
 
 /*  SPI */
 #define SPI_CS_Port             GPIOA
@@ -112,7 +101,6 @@ void USB_DRD_FS_IRQHandler(void);
 
 /* Board */
 void sx_board_init(void);
-void read_vol_pin(uint32_t time_stamp);
 void gps_it_handle(void);
 void sim_it_handle(void);
 void board_gps_uart_resume_it(void);

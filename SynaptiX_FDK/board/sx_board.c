@@ -28,8 +28,6 @@ static uint8_t uart_rx_char[3];
 static void set_enter_sleep_mode(void);
 static void set_enter_full_mode(void);
 
-static ADC_HandleTypeDef *hal_adc = &hadc1;
-
 void dcd_fs_msp_init(uint8_t rhport)
 {
     (void)rhport;
@@ -126,12 +124,10 @@ static void i2c1_scan_debug(void)
 
 void sx_board_init(void)
 {
-#if SX_VBUS_FROM_BQ
-    /* PC1 is not connected to VBUS on v1.4. Leaving it as an EXTI input would let a floating pin
-     * wake the MCU from STOP and fire the plug/unplug callbacks. Back to analog, EXTI line off. */
+    /* v1.4 has no GPIO for USB detection. CubeMX still sets PC1 up as an EXTI input; a floating pin would
+     * wake the MCU from STOP, so put it back to analog and switch the EXTI1 line off. */
     HAL_NVIC_DisableIRQ(EXTI1_IRQn);
-    HAL_GPIO_DeInit(VBUS_PORT, VBUS_PIN);
-#endif
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_1);
     // Initialize Logger
     static sx_uart_config_t uart_config[3];
     uart_config[UART_LOG].pDriver = hal_uart[UART_LOG];
@@ -207,10 +203,6 @@ void sx_board_init(void)
 #if I2C_SCAN_DEBUG
     i2c1_scan_debug();
 #endif
-
-    HAL_ADCEx_Calibration_Start(hal_adc, ADC_SINGLE_ENDED);
-    HAL_ADC_Start(hal_adc);
-    sx_adc_reader_init(&board.s_adc_reader);
 }
 
 /* ------------------------------------------------------------------ */
@@ -363,11 +355,6 @@ static void set_enter_sleep_mode(void) {
 //     log_info(TAG, "Enter full POWER");
 // }
 
-void read_vol_pin(uint32_t time_stamp) {
-    sx_adc_reader_process(&board.s_adc_reader, hal_adc, time_stamp);
-    board.voltage.v_bat = board.s_adc_reader.v_bat_filtered;
-}
-
 /* USB IT CB    */
 void tud_mount_cb(void) {
     log_info(TAG, "USB tiny connected");
@@ -383,9 +370,7 @@ void tud_umount_cb(void) {
     sx_gpio_write(&s_charge, SX_GPIO_LOW);
     sx_gpio_write(&s_dis_charge, SX_GPIO_HIGH);
     log_info(TAG,"USB discharge");
-#if !SX_VBUS_FROM_BQ
-    app_request_sleep();
-#endif   /* with the BQ, VBUS_STAT decides: a host reset/unmount while VBUS is still present must not sleep */
+    /* No sleep request here: VBUS_STAT of the BQ decides (a host reset/unmount while VBUS is still present must not sleep) */
     log_info(TAG, "USB tiny disconnected");
     // set_enter_sleep_mode();
     // app_request_sleep();
@@ -411,11 +396,7 @@ void tud_resume_cb(void) {
 }
 
 void check_charge(void){
-#if SX_VBUS_FROM_BQ
     uint8_t ret = board.bq.present;      /* debounced VBUS_STAT, updated by bq25622_poll() in app.c */
-#else
-    uint8_t ret = HAL_GPIO_ReadPin(VBUS_PORT, VBUS_PIN);
-#endif
     (ret == 1)?(sx_gpio_write(&s_charge, SX_GPIO_HIGH)):(sx_gpio_write(&s_charge, SX_GPIO_LOW));
 }
 
@@ -432,35 +413,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         HAL_UART_Receive_IT(hal_uart[UART_LOG], &uart_rx_char[UART_LOG], 1);
     }
 }
-
-#if !SX_VBUS_FROM_BQ
-void HAL_GPIO_EXTI_Rising_Callback(uint16_t GPIO_Pin)
-{
-    if(GPIO_Pin == VBUS_PIN){
-        
-        /* Set EXTI wake reason for sleep manager if MCU is waking from sleep */
-        sx_sleep_set_exti_wake();
-        
-        sx_gpio_write(&s_dis_charge, SX_GPIO_HIGH);
-        sx_gpio_write(&s_charge, SX_GPIO_HIGH);
-
-        app_sync_gps_log_to_disk();
-        app_mode_full_pw();
-        app_notify_usb_connected();
-        log_info(TAG,"USB charge");
-    }
-}
-
-void HAL_GPIO_EXTI_Falling_Callback(uint16_t GPIO_Pin){
-    if(GPIO_Pin == VBUS_PIN){
-        sx_gpio_write(&s_dis_charge, SX_GPIO_HIGH);
-        sx_gpio_write(&s_charge, SX_GPIO_LOW);
-        
-        app_request_sleep();
-        log_info(TAG,"USB discharge");
-    }
-}
-#endif /* !SX_VBUS_FROM_BQ */
 
 void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts) {
     log_info("USB", "CDC line state: dtr=%d rts=%d", dtr, rts);

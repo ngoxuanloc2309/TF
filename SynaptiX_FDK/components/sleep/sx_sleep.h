@@ -10,7 +10,7 @@ extern "C" {
 typedef enum {
     WAKE_REASON_UNKNOWN = 0,
     WAKE_REASON_RTC,
-    WAKE_REASON_EXTI,
+    WAKE_REASON_VBUS,      /* USB found by the wake-fake VBUS_STAT check (no GPIO/EXTI on v1.4) */
 } wake_reason_t;
 
 typedef struct sx_sleep sx_sleep_t;
@@ -60,9 +60,8 @@ static inline wake_reason_t sx_sleep_get_wake_reason(sx_sleep_t *mgr)
     return mgr->wake_reason;
 }
 
-/* Global sleep instance accessor for interrupt handlers to set wake reason */
+/* Global sleep instance accessor */
 sx_sleep_t* sx_sleep_get_instance(void);
-void sx_sleep_set_exti_wake(void);
 
 extern sx_sleep_ops_t sx_sleep_ops;
 

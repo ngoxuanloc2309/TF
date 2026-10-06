@@ -13,6 +13,8 @@
 #include "cJSON.h"
 #include "bno055.h"
 #include "test_at.h"
+#include "tusb.h"
+#include "sx_usb_tiny_msc.h"
 #include <time.h>
 
 static const char *TAG = "App";
@@ -319,9 +321,20 @@ static void _apply_default_config(sx_user_mqtt_cfg_t *cfg){
 
 static void _handle_usb_connected(void)
 {
-    g_app.sleep.wake_reason = WAKE_REASON_EXTI;
+    g_app.sleep.wake_reason = WAKE_REASON_VBUS;
 
     log_info(TAG, "=== USB connected — restarting ===");
+
+    /* The USB cable was plugged while the MCU was in STOP (USB IRQ off, clock stopped), so the host's
+     * enumeration got no answer and it gave up ("unknown USB device"). If the host has not mounted us,
+     * toggle the D+ pull-up so it sees a fresh plug and enumerates again (CDC + MSC). */
+    if (!tud_mounted())
+    {
+        log_info(TAG, "USB not mounted by host — re-enumerate");
+        sx_usb_tiny_msc_disconnect();
+        sx_delay_ms(500);
+        sx_usb_tiny_msc_connect();
+    }
 
     g_app.last_publish_done = 0;
     g_app.publish_count = 0;
@@ -1094,7 +1107,6 @@ void app_process(uint32_t timestamp)
     }
 
     app_sync_rtc_from_modem();   /* network time (CCLK?) -> external RTC, once per new sample */
-    read_vol_pin(timestamp);
     app_vbus_process(timestamp);          /* BQ VBUS_STAT -> plug/unplug events (no GPIO on v1.4) */
     check_charge();
 #if BQ_PHASE0_DEBUG
@@ -1208,9 +1220,9 @@ void app_process(uint32_t timestamp)
                 log_info(TAG, "Woke by RTC timer");
                 g_app.app_mode = APP_MODE_WAKE_PUBLISH;
             }
-            else if (wake_reason == WAKE_REASON_EXTI)
+            else if (wake_reason == WAKE_REASON_VBUS)
             {
-                log_info(TAG, "Woke by VBUS interrupt");
+                log_info(TAG, "Woke by VBUS (BQ check)");
                 app_notify_usb_connected();
             }
             else {
