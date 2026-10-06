@@ -9,7 +9,7 @@
 
 static const char *TAG = "TEST_AT_USB";
 
-#define NUMBER_COMMAND  9
+#define NUMBER_COMMAND  11
 
 #define AT              0
 #define AT_VPN          1
@@ -20,6 +20,8 @@ static const char *TAG = "TEST_AT_USB";
 #define AT_IMUPWR       6
 #define AT_I2CPWR       7
 #define AT_BQREAD       8
+#define AT_FLASHPIN     9
+#define AT_I2CSCAN      10
 
 // const char* at_usb_command[NUMBER_COMMAND] = {"AT", "AT+VPN", "AT+MQTTCONNECT", "AT+TIMESLEEP"};
 
@@ -32,6 +34,8 @@ static const char *TAG = "TEST_AT_USB";
 #define CMD_AT_IMUPWR       "AT+IMUPWR"
 #define CMD_AT_I2CPWR       "AT+I2CPWR"
 #define CMD_AT_BQREAD       "AT+BQREAD"
+#define CMD_AT_FLASHPIN     "AT+FLASHPIN"
+#define CMD_AT_I2CSCAN      "AT+I2CSCAN"
 
 #define AT_RESP_OK      "\r\nOK\r\n"
 #define AT_RESP_ERROR   "\r\nERROR\r\n"
@@ -87,7 +91,8 @@ static int _at_timesleep_set(AT_Command_t *cmd, const char *param)
  *
  *    AT+FLASHPWR=0|1      cut / restore the flash        AT+FLASHPWR?   state
  *    AT+FLASHTEST=N       N x (power off, write, power off, read back, compare)
- *    AT+IMUPWR=0|1        cut / restore the IMU          AT+IMUPWR?     state
+ *    AT+IMUPWR=0|1        IMU SUSPEND / back to NDOF     AT+IMUPWR?     state
+ *    AT+I2CSCAN           SCL/SDA levels + ACK list
  *    AT+I2CPWR=0|1        DeInit / Init I2C1             AT+I2CPWR?     state
  *    AT+BQREAD            read VBUS_STAT from the BQ (I2C 0x6A)
  *
@@ -133,6 +138,7 @@ static int _at_flashpwr_set(AT_Command_t *cmd, const char *param)
     _respondf("+FLASHPWR: going %s", v ? "on" : "off");
     log_info(TAG, "FLASHPWR=%d: start", v);
 
+    sx_storage_hold_off(v == 0);                  /* =0: stay off until =1 (publish_gps would wake it every 10 s) */
     if (v == 0) {
         sx_storage_sleep();
     } else if (sx_storage_wake() != SX_STORAGE_OK) {
@@ -151,6 +157,7 @@ static int _at_flashtest_set(AT_Command_t *cmd, const char *param)
     int n = param ? atoi(param) : 0;
     if (n < 1 || n > FLASHTEST_MAX_LOOPS) { _respond(AT_RESP_ERROR); return -1; }
 
+    sx_storage_hold_off(false);                   /* the test relies on auto-wake */
     int pass = 0, fail = 0;
     uint8_t wbuf[FLASHTEST_LEN], rbuf[FLASHTEST_LEN];
 
@@ -183,7 +190,7 @@ static int _at_flashtest_set(AT_Command_t *cmd, const char *param)
 
 static int _at_imupwr_q(AT_Command_t *cmd)
 {
-    _respondf("+IMUPWR: %d", sx_board_imu_is_on() ? 1 : 0);
+    _respondf("+IMUPWR: %s", sx_board_imu_is_active() ? "active" : "suspended");
     _respond(AT_RESP_OK);
     return 0;
 }
@@ -193,12 +200,14 @@ static int _at_imupwr_set(AT_Command_t *cmd, const char *param)
     int v = _parse01(param);
     if (v < 0) { _respond(AT_RESP_ERROR); return -1; }
 
-    int rc = (v == 0) ? sx_board_imu_off() : sx_board_imu_on();
+    /* =0: SUSPEND, =1: back to NDOF. The supply is never cut (it kills the shared I2C1 bus). */
+    int rc = (v == 0) ? sx_board_imu_suspend() : sx_board_imu_resume();
     if (v == 1 && rc == 0) {
-        bool cal = imu_calib_load();          /* false is normal if no calib file was ever saved */
-        _respondf("+IMUPWR: calib=%d", cal ? 1 : 0);
+        bno055_calib_stat_t cs;
+        if (bno055_get_calib_stat(&board.imu, &cs) == 0)
+            _respondf("+IMUPWR: calib sys=%u gyro=%u acc=%u mag=%u", cs.sys, cs.gyro, cs.accel, cs.mag);
     }
-    _respondf("+IMUPWR: %d rc=%d", sx_board_imu_is_on() ? 1 : 0, rc);
+    _respondf("+IMUPWR: %s rc=%d", sx_board_imu_is_active() ? "active" : "suspended", rc);
     _respond(rc == 0 ? AT_RESP_OK : AT_RESP_ERROR);
     return rc;
 }
@@ -235,6 +244,39 @@ static int _at_bqread_exec(AT_Command_t *cmd)
         return -1;
     }
     _respondf("+BQREAD: VBUS_STAT=%u CHG_STAT=%u", (unsigned)board.bq.vbus_stat, (unsigned)board.bq.chg_stat);
+    _respond(AT_RESP_OK);
+    return 0;
+}
+
+/* AT+FLASHPIN=0|1 drives Flash_PWR (PC4) directly, AT+FLASHPIN? reads the pin back.
+ * Bench tool to find the real polarity of the flash supply switch while you measure the flash VCC pin.
+ * It bypasses the storage layer: afterwards run AT+FLASHPIN=0 (normal state) or reset the board. */
+static int _at_flashpin_q(AT_Command_t *cmd)
+{
+    GPIO_PinState s = HAL_GPIO_ReadPin(Flash_PWR_GPIO_Port, Flash_PWR_Pin);
+    _respondf("+FLASHPIN: %d", s == GPIO_PIN_SET ? 1 : 0);
+    _respond(AT_RESP_OK);
+    return 0;
+}
+
+static int _at_flashpin_set(AT_Command_t *cmd, const char *param)
+{
+    int v = _parse01(param);
+    if (v < 0) { _respond(AT_RESP_ERROR); return -1; }
+
+    HAL_GPIO_WritePin(Flash_PWR_GPIO_Port, Flash_PWR_Pin, v ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    GPIO_PinState s = HAL_GPIO_ReadPin(Flash_PWR_GPIO_Port, Flash_PWR_Pin);
+    _respondf("+FLASHPIN: wrote %d, reads back %d", v, s == GPIO_PIN_SET ? 1 : 0);
+    _respond(AT_RESP_OK);
+    return 0;
+}
+
+/* AT+I2CSCAN: line levels of SCL/SDA and the addresses that ACK (0x29 IMU, 0x32 RTC, 0x6A BQ). */
+static int _at_i2cscan_exec(AT_Command_t *cmd)
+{
+    char out[96];
+    sx_board_i2c1_scan(out, sizeof(out));
+    _respondf("+I2CSCAN: %s", out);
     _respond(AT_RESP_OK);
     return 0;
 }
@@ -291,6 +333,14 @@ static AT_Command_t s_commands[NUMBER_COMMAND] = {
     [AT_BQREAD] = {
         .command = CMD_AT_BQREAD,
         .handler = { .set_handler = NULL, .question_handler = NULL, .execute_handler = _at_bqread_exec }
+    },
+    [AT_I2CSCAN] = {
+        .command = CMD_AT_I2CSCAN,
+        .handler = { .set_handler = NULL, .question_handler = NULL, .execute_handler = _at_i2cscan_exec }
+    },
+    [AT_FLASHPIN] = {
+        .command = CMD_AT_FLASHPIN,
+        .handler = { .set_handler = _at_flashpin_set, .question_handler = _at_flashpin_q, .execute_handler = NULL }
     },
 };
 

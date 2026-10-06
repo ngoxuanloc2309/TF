@@ -22,6 +22,7 @@ static sx_W25Q128_t     s_w25q128;
 static sx_ext_flash_t   s_flash;
 static bool             s_initialized = false;
 static bool             s_powered     = false;   /* flash rail + SPI1 are up */
+static bool             s_hold_off    = false;   /* bench hold: refuse auto-wake until released */
 static sx_storage_cfg_t *s_cfg        = NULL;
 
 sx_storage_err_t sx_storage_init(sx_storage_cfg_t *cfg)
@@ -58,6 +59,7 @@ sx_storage_err_t sx_storage_init(sx_storage_cfg_t *cfg)
 static sx_storage_err_t _ensure_power(void)
 {
     if (s_powered) return SX_STORAGE_OK;
+    if (s_hold_off) return SX_STORAGE_ERR_IO;     /* held off by the bench command: do not wake */
     return sx_storage_wake();
 }
 
@@ -284,4 +286,12 @@ sx_storage_err_t sx_storage_wake(void)
 bool sx_storage_is_powered(void)
 {
     return s_powered;
+}
+
+/* While held, the flash stays off: every sx_storage_* call fails with SX_STORAGE_ERR_IO instead of
+ * waking it. Used by the AT test commands so the rail can be measured for longer than one publish period.
+ * Releasing the hold does not power the flash; the next access (or sx_storage_wake()) does. */
+void sx_storage_hold_off(bool hold)
+{
+    s_hold_off = hold;
 }

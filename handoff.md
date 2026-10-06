@@ -5,7 +5,7 @@ MCU: STM32H563 (HAL, Makefile, arm-none-eabi-gcc). Framework nội bộ: `Synapt
 Tài liệu tham chiếu: datasheet BQ25620/BQ25622 (SLUSEG2D Rev. D). Số trang là số trang trong file PDF, có thể lệch vài trang so với số in ở chân trang.
 Repo tham khảo (weather station, không có chân cắt nguồn nên tắt module bằng lệnh phần mềm): https://github.com/logan123synaptix/WS_v1.git
 
-**Trạng thái (cập nhật 05/10/2026):** Phase 0 đã chạy được trên board (đọc được chip nguồn qua I2C). Phần sleep/wake (Phase 1–6) vẫn là kế hoạch, chưa có code. Cùng phiên này đã debug và sửa chuỗi SIM76xx/MQTT/publish (xem **mục 11**). **Chip nguồn trên board không phải BQ25622 như giả định (xem mục 7a).** Chưa đo nguồn modem, chưa test sleep trên board.
+**Trạng thái (cập nhật 06/10/2026):** Phase 0 chạy được trên board. **Phase 1 (giờ mạng) xong và đã kiểm chứng trên board** (mục 6, mục 12). **Phase 2 đã code và test trên board phần lớn** (mục 12): cắt/bật nguồn flash và I2C1 đạt; **cắt nguồn IMU không dùng được** (kéo sập bus I2C1), thay bằng SUSPEND. Còn 2 việc kiểm tra chưa xong (mục 12.4). Phase 3–6 vẫn là kế hoạch, chưa có code. **Chip nguồn trên board không phải BQ25622 như giả định (mục 7a).** Chưa đo dòng ngủ, chưa test sleep thật trên board.
 
 ---
 
@@ -45,18 +45,18 @@ Các thành phần khác:
 - `components/bq25622/`: driver **chỉ đọc** (`bq25622_init/poll/refresh/read_status`, poll + debounce). **Chưa được gọi ở đâu, và `bq25622.c` chưa có trong build** (cần thêm vào `synaptix.mk`, thêm `-I` vào `Makefile`).
 - `sx_board.c`: `HAL_GPIO_EXTI_*_Callback` xử lý cắm/rút (điều khiển `EN_CHARGE`/`EN_DISCHARGE`, gọi `app_mode_full_pw`, `app_notify_usb_connected`, `app_request_sleep`); `check_charge()` đọc `VBUS_PIN` mỗi vòng lặp.
 - `sx_board.c:221` gán `board.voltage.v_bat` từ ADC MCU (`services/read_bat`), và `app.c:330` dùng `v_bat` trong payload publish. **v1.4 không dùng được ADC MCU**, cần thay bằng VBAT từ BQ.
-- `services/sx_ex_storage`: `sx_storage_sleep()` và `sx_storage_wake()` hiện **rỗng**.
-- `components/sim76xx/sim76xx.c`: **chưa có `AT+CTZU`/`AT+CCLK?`**. Giờ RTC ngoài chỉ được cập nhật từ GPS.
+- `app/user/sx_ex_storage/` (không phải `services/`): `sx_storage_sleep()`/`sx_storage_wake()` **đã được cài ở Phase 2** (mục 12.2). Mọi hàm `sx_storage_*` tự bật flash nếu đang tắt.
+- `components/sim76xx/sim76xx.c`: **đã có `AT+CTZU=1`/`AT+CCLK?`** (Phase 1) và `sim76xx_get_utc_now()`. `app.c` đã đồng bộ RTC ngoài từ giờ mạng và từ GPS (mục 12.1).
 - Bug có sẵn: cắm USB trong lúc `ENTER_SLEEP` làm `sleep_requested` bị kẹt, lần rút sau `app_request_sleep()` bị bỏ qua. Cần reset cờ này khi xử lý cắm USB.
 
 ## 3. Chân cắt nguồn có sẵn (khác WS_v1)
 
-Tracking FW có GPIO cắt nguồn cho từng module (khai báo trong `Core/Inc/main.h`, `board/sx_board.h`). Mức suy ra từ code: **LOW = bật, HIGH = tắt** (`gpio.c` khởi tạo LOW nên mặc định bật).
+Tracking FW có GPIO cắt nguồn cho từng module (khai báo trong `Core/Inc/main.h`, `board/sx_board.h`). Mức đã **đo trên board** cho flash: `PC4` **HIGH = rail tắt (0 V), LOW = bật (3.3 V)**. Các chân khác (`IMU_EN_PW`, ...) chưa đo riêng mức này; riêng IMU xem bên dưới.
 
 | Module | Chân | Ghi chú |
 |---|---|---|
-| Exflash W25Q128 | `Flash_PWR` = PC4 (`SPI_PW_PIN`) | `sx_W25Q128_power_down/up()` đã có. SPI: CS = PA4, SCK/MISO/MOSI = PA5/6/7 |
-| IMU BNO055 | `IMU_EN_PW` = PB4 | `bno055_power_off/on()` đã có. `IMU_RESET` = PB5 (cùng chân `I2C1_RESET`) |
+| Exflash W25Q128 | `Flash_PWR` = PC4 (`SPI_PW_PIN`) | Cắt được, đã đo. `sx_W25Q128_power_down/up()` giờ cắt/cấp rail thật (chờ WIP trước khi cắt). SPI: CS = PA4, SCK/MISO/MOSI = PA5/6/7 |
+| IMU BNO055 | `IMU_EN_PW` = PB4 | **KHÔNG được cắt nguồn**: đã đo, `IMU_EN_PW` HIGH thì `SCL`/`SDA` bị kéo về 0 và BQ (`0x6A`), RTC (`0x32`) không ACK nữa (IMU mất nguồn kẹp bus dùng chung). Dùng SUSPEND (`sx_board_imu_suspend/resume`). `IMU_RESET` = PB5 (cùng chân `I2C1_RESET`) |
 | RTC ngoài RX8130CE | `RTC_EN_PW` = PB3 | **Không cắt** (cần giữ giờ, chưa xác nhận backup pin) |
 | GPS | `GPS_PWR` = PC15 | đã dùng |
 | LTE | `LTE_PWR` = PC13, `LTE_PWR_Key` = PC14 | đã dùng, **giữ nguyên phần SIM** |
@@ -69,7 +69,7 @@ I2C1: PB6/PB7 (BQ, RTC, IMU dùng chung). VBUS v1.2: PC1.
 Nguyên tắc: **ngoại vi theo nhu cầu.** Khi sleep thì DeInit hết và cắt nguồn; mỗi lần thức chỉ bật đúng thứ tác vụ đó cần, làm xong thì DeInit/cắt lại.
 
 **Vào sleep (một lần):**
-- Wait busy flash, kéo `Flash_PWR` và `IMU_EN_PW` lên HIGH.
+- Wait busy flash, kéo `Flash_PWR` lên HIGH (`sx_storage_sleep()`). **Không kéo `IMU_EN_PW`**: đưa IMU vào SUSPEND (`sx_board_imu_suspend()`) trước khi DeInit I2C1.
 - `HAL_SPI_DeInit`, `HAL_I2C_DeInit`, các UART (pin về analog, như WS_v1). Đưa CS (PA4) và `IMU_RESET` (PB5) về LOW/analog để không đẩy tín hiệu vào chip đã mất nguồn.
 - Tắt GPS/SIM như hiện tại (giữ nguyên chuỗi SIM). UART log DeInit **sau cùng**.
 - Vào STOP.
@@ -83,8 +83,8 @@ Nguyên tắc: **ngoại vi theo nhu cầu.** Khi sleep thì DeInit hết và c�
 | Wake-real (VBUS thật) | Lên full power | Tất cả: flash, IMU, USB, nạp calib IMU, ghi lại cấu hình sạc |
 
 **Quy tắc nguồn:**
-- Flash: mặc định tắt, chỉ bật khi ghi/đọc log; `sx_storage_*` nên tự bật nguồn nếu đang tắt để chỗ gọi (`write_gps_log`...) không phải biết về nguồn.
-- IMU: tắt hẳn ở mọi chế độ ngủ, kể cả chu kỳ publish. Chỉ bật khi wake-real. Vì IMU mất calib khi mất nguồn, wake-real phải: bật nguồn, chờ boot, `bno055_init`, nạp calib (file `IMU_CALIB_FILE_PATH` nằm trong flash nên **bật flash trước, IMU sau**).
+- Flash: mặc định tắt khi ngủ, chỉ bật khi ghi/đọc log; `sx_storage_*` **đã** tự bật nguồn nếu đang tắt (`_ensure_power`) nên chỗ gọi (`write_gps_log`, `read_last_gps`...) không phải biết về nguồn. Cờ `sx_storage_hold_off(true)` chặn auto-wake (chỉ dùng cho test bằng AT).
+- IMU: **SUSPEND** ở mọi chế độ ngủ, kể cả chu kỳ publish (không cắt nguồn, xem mục 3). Chỉ resume khi wake-real: `sx_board_imu_resume()` (PWR_MODE NORMAL rồi OPR_MODE NDOF, không reset). **Chưa xác nhận suspend có giữ calib không** (mục 12.4); nếu mất thì gọi `imu_calib_load()` sau resume (file `IMU_CALIB_FILE_PATH` nằm trong flash, `sx_storage_*` tự bật flash).
 - Đề xuất lớp `acquire(res)`/`release(res)` cho I2C1, SPI+flash, UART GPS, UART LTE, UART log, IMU; `release_all()` gọi ở đầu chuỗi sleep.
 - Đếm chu kỳ publish (cộng dồn các lần wake-fake) phải theo RTC, không lệch dần.
 - UART log bị DeInit lúc ngủ nên khó debug: dùng cờ compile để giữ log UART khi debug, tắt khi đo dòng.
@@ -98,6 +98,8 @@ Nguyên tắc: **ngoại vi theo nhu cầu.** Khi sleep thì DeInit hết và c�
 - Sau khi tắt modem bằng PWRKEY, `mqtt->state` vẫn CONNECTED nếu không reset, nên sau wake `connect()` bị bỏ qua. Tracking FW đã gọi `sx_user_mqtt_force_disconnect()` trước khi tắt SIM; giữ nguyên thứ tự này.
 - Không dùng một instance flash chưa init (từng gây HardFault); luôn đi qua instance thật trong `sx_ex_storage.c`.
 - IWDG bị đóng băng lúc STOP nhờ option byte; nếu tracking FW có IWDG thì cần refresh ngay trước STOP (chưa kiểm tra tracking FW có dùng IWDG không).
+- (Tracking FW, đã gặp ở Phase 2) Cắt nguồn một chip nằm chung bus I2C có thể kéo sập cả bus (mục 3, IMU). Luôn đo `SCL`/`SDA` và đọc lại các slave khác ngay sau khi cắt, trước khi viết tiếp.
+- (Tracking FW) `publish_gps()` gọi `read_last_gps()` mỗi chu kỳ publish khi chưa có fix, nên bất kỳ truy cập flash nào kể cả lúc đang `FULL_POWER` đều làm `_ensure_power` bật lại flash trong tối đa `time_publish` giây. Đo nguồn flash khi test phải dùng `AT+FLASHPWR=0` (có hold).
 
 ## 6. Giờ mạng (NITZ) cho RTC ngoài
 
@@ -105,13 +107,15 @@ Nguyên tắc: **ngoại vi theo nhu cầu.** Khi sleep thì DeInit hết và c�
 - Bộ AT manual dòng A76XX có `AT+CCLK`, `AT+CTZU`, `AT+CTZR`, `AT+CNTP` (NTP). A7680C thuộc dòng Cat 1 cùng hãng, **nhưng chưa có tài liệu nào xác nhận thẳng A7680C nằm trong đúng bộ manual đó**: cần kiểm chứng trên board.
 - Rủi ro: NITZ phụ thuộc nhà mạng (nếu không gửi giờ thì `CCLK?` trả giờ mặc định chưa đồng bộ); `AT+CNTP` cần đã có kết nối dữ liệu và một NTP server.
 - Kiểm chứng trước khi code (gửi tay, lúc SIM đã đăng ký mạng): `AT+CGMM`, `AT+CTZU=1`, `AT+CCLK?`.
-- Thứ tự nguồn giờ đề xuất: NITZ ưu tiên, GPS dự phòng. Ghi RTC ngoài cần `acquire` I2C1.
+- Thứ tự nguồn giờ đề xuất: NITZ ưu tiên, GPS dự phòng. Ghi RTC ngoài cần `acquire` I2C1. **Hiện code: nguồn nào đến sau thì ghi đè** (GPS chỉ ghi khi có fix); chưa chốt thứ tự ưu tiên.
+- **Kết quả kiểm chứng trên board (06/10/2026, SIM `m3-world`):** `AT+CGMM` = `A7680C-LANS`; `AT+CTZU=1` OK; `AT+CCLK?` = `+CCLK: "26/10/05,16:20:01+28"` (zone 28 quý giờ = UTC+7, NITZ có giờ); parse đúng, RTC ngoài được ghi `16:20:01 05/10/2026`, các publish sau đó có `time`/`date` đúng. Với SIM/nhà mạng khác chưa test.
 
 ## 7a. Chip nguồn thực tế trên board (phát hiện khi test Phase 0)
 
 - Scan I2C1 chỉ thấy `0x29` (BNO055), `0x32` (RX8130CE), `0x6A`. **Không có `0x6B`**, nên driver ở `0x6B` báo `not found`.
 - Datasheet BQ25620/BQ25622 (SLUSEG2D): địa chỉ 7-bit `0x6B`. Tra datasheet thì **BQ25628/BQ25628E/BQ25629 dùng `0x6A`**, cùng dải thanh ghi 0x02–0x38. Nhiều khả năng đây là chip trên board, **nhưng chưa xác nhận** (cần mã in trên IC/schematic).
 - Đã đổi driver sang `0x6A` (macro `BQ25622_I2C_ADDR7` trong `bq25622.h`, có thể override bằng `-D`). Log boot: `raw @0x6A: PART_INFO(0x38)=0x12 STATUS0(0x1D)=0x11 STATUS1(0x1E)=0x04`, driver báo `PN=2 (unknown) rev=2` (driver chỉ biết PN 0 = BQ25620, 1 = BQ25622). Ý nghĩa PN=2 **chưa đối chiếu datasheet**.
+- **Chạy pin đã quan sát (06/10/2026):** log `BQ VBUS_STAT=000 CHG_STAT=0 -> on battery` và `initial VBUS_STAT=0 -> USB absent`; `STATUS0(0x1D)=0x01 STATUS1(0x1E)=0x00`. Chưa ghi lại được lúc chuyển 100→000 khi đang chạy (rút USB giữa chừng).
 - `VBUS_STAT=100b` (4) khi cắm USB. Theo bảng 8-2 datasheet BQ25629 (dò D+/D-), giá trị này là "unknown 5-V adapter", IINDPM = **500 mA**. BQ25628 không có dò D+/D-, nên chưa rõ bảng này áp dụng cho chip nào. Cần xác nhận part trước.
 - **Không chạy hàm ghi BQ (Phase 5/6: `config_apply`, cắt xả, `battery_disconnect`) cho đến khi đã đối chiếu register map của đúng part.** Toàn bộ bảng mục 7 là của BQ25622 và có thể sai bit/giá trị với BQ25628/29.
 - `READ_BAT` (ADC MCU, `services/read_bat`) đọc ~0.73 V: pin gần như không nối hoặc chia áp sai. Board đang chạy chỉ bằng USB. `CHG_STAT` nhảy 0/1/2 khi không có pin (chưa xác nhận nguyên nhân).
@@ -138,8 +142,8 @@ Nguyên tắc: **ngoại vi theo nhu cầu.** Khi sleep thì DeInit hết và c�
 ## 8. Kế hoạch phase (mỗi phase test độc lập trên board)
 
 - **Phase 0 — Đọc BQ (ĐÃ XONG phần đọc):** `bq25622.c` đã vào build, đọc được ở `0x6A`, log `BQ VBUS_STAT=100 CHG_STAT=0 -> VBUS present`. **Còn lại:** chưa test rút USB (`000`) và chưa xác nhận part (mục 7a).
-- **Phase 1 — SIM76xx có giờ mạng:** thêm `AT+CTZU=1`, `AT+CCLK?`, parse UTC, hàm lấy giờ. Điều kiện: kết quả kiểm chứng trên board ở mục 6.
-- **Phase 2 — Cắt/bật nguồn flash và IMU:** điền `sx_storage_sleep/wake`, hàm nguồn IMU, DeInit SPI/I2C, xử lý CS/`IMU_RESET`. Test: cắt flash, đo dòng, bật lại đọc JEDEC ID, ghi/đọc thử. **Test rủi ro số 1:** cắt IMU xong có còn đọc được BQ qua I2C không (IMU mất nguồn có thể kéo SDA/SCL qua diode bảo vệ). Nếu lỗi thì dùng SUSPEND cho IMU thay vì cắt nguồn.
+- **Phase 1 — SIM76xx có giờ mạng (ĐÃ XONG, đã test trên board):** `AT+CTZU=1`, `AT+CCLK?`, parse UTC, `sim76xx_get_utc_now()`, đồng bộ RTC ngoài trong `app.c`. Xem mục 6 và 12.1.
+- **Phase 2 — Nguồn flash, IMU, I2C1 (ĐÃ CODE; test trên board gần xong):** cắt/bật flash đạt (`AT+FLASHTEST` 5 và 50 vòng, 0 lỗi); DeInit/Init I2C1 đạt; **cắt nguồn IMU thất bại (kẹp bus) nên đổi sang SUSPEND, đạt** (bus vẫn khỏe, BQ đọc được, resume `rc=0`). **Còn:** reset board kiểm tra filesystem còn nguyên và publish sau khi bật lại I2C (mục 12.4). Chi tiết mục 12.
 - **Phase 3 — Quản lý ngoại vi theo nhu cầu + vòng wake-fake:** lớp `acquire/release`, vòng STOP → I2C1 → đọc `VBUS_STAT` → wake-real hoặc ngủ tiếp, `time_check_vbus`, sửa thứ tự `SX_RESUME_TICS()`/`SystemClock_Config()`, sửa bug `sleep_requested`.
 - **Phase 4 — Chu kỳ publish theo nhu cầu:** GPS → last_gps từ flash → ghi flash → SIM publish → cập nhật giờ RTC → release hết. Đếm chu kỳ theo RTC.
 - **Phase 5 — Cấu hình sạc BQ:** `reg_write8/16`, `bq25622_config_apply()` (ICHG/VREG/IINDPM/ITERM, tắt watchdog, cấu hình ADC), verify-and-apply lúc boot và mỗi lần phát hiện cắm USB. Cần thông số cell.
@@ -157,6 +161,10 @@ Phase 3 phụ thuộc Phase 2; Phase 4 phụ thuộc 1–3; Phase 5 và 6 độc
 6. Mục "log" trong danh sách bật ngoại vi ở chu kỳ publish: đang hiểu là UART log debug (chưa xác nhận).
 7. **Part number thật của chip nguồn** (BQ25628/BQ25628E/BQ25629/khác) và nơi dò USB D+/D- (có nối hay để hở).
 8. **Nguồn cho modem:** pin có nối không, USB dùng cổng PC hay adapter; nguyên nhân modem reset (mục 11.4).
+9. **Trường `time` trong payload GPS lệch +7 giờ so với epoch UTC thật** (là giờ local UTC+7 đưa vào `mktime` rồi coi như UTC; ví dụ publish `1791217206` = 16:20:06 trong khi UTC thật là 09:20:06 = `1791192006`). Lỗi có từ trước. Cần quyết định với backend: giữ hay trừ `7*3600`. **Chưa chốt.**
+10. **Ưu tiên giữa giờ mạng và GPS** khi hai nguồn lệch nhau (mục 6).
+11. **BNO055 SUSPEND có giữ calib không và dòng thực tế khi suspend** (chưa đo).
+12. **Đối chiếu schematic về CS (PA4) kéo LOW lúc flash mất nguồn** (code đang làm theo nguyên tắc không đẩy tín hiệu vào chip mất nguồn; chưa đối chiếu mạch).
 
 ## 10. Kế hoạch test trên board
 
@@ -165,7 +173,7 @@ Phase 3 phụ thuộc Phase 2; Phase 4 phụ thuộc 1–3; Phase 5 và 6 độc
 - Cắm/rút lúc đang `ENTER_SLEEP` và lúc đang tắt SIM.
 - Boot chỉ bằng pin.
 - I2C lỗi thì giữ trạng thái cũ, không tự vào sleep nhầm.
-- Cắt IMU rồi đọc BQ; cắt flash rồi bật lại đọc/ghi (kiểm tra filesystem còn nguyên).
+- ~~Cắt IMU rồi đọc BQ~~ (đã làm: thất bại, mục 3). Thay bằng: IMU suspend rồi đọc BQ/RTC (đạt). Cắt flash rồi bật lại đọc/ghi (đạt 50 vòng); còn kiểm tra filesystem còn nguyên sau reset.
 - Ghi log flash trong chu kỳ publish rồi tắt lại nhiều lần liên tiếp.
 - Đo dòng ngủ trung bình với các `time_check_vbus` khác nhau. Con số ước tính ~5 µA ở chu kỳ 10 s **chưa đo**.
 - Cắt xả ở ngưỡng đã chọn; kiểm tra tự khởi động lại khi cắm adapter.
@@ -224,3 +232,72 @@ Bước kiểm chứng đề xuất (chưa thực hiện):
 2. Xác nhận part number chip nguồn, rồi mới đối chiếu register map của đúng part (Phase 5/6 phụ thuộc điều này).
 3. Quyết định xử lý nguồn/pin cho modem.
 4. Quay lại Phase 1–6 (sleep/wake theo nhu cầu). Lưu ý các thay đổi ở mục 11 liên quan `sx_user_mqtt`/`sim76xx_start` nên được giữ nguyên khi sửa luồng sleep (đặc biệt: sau khi tắt SIM bằng PWRKEY phải reset `s_mqtt.state`, giống mục 5 phần WS_v1).
+
+---
+
+## 12. Phiên 06/10/2026: giờ mạng (Phase 1) và nguồn flash/IMU/I2C1 (Phase 2)
+
+Mọi file dưới đây là bản đầy đủ đã present; build bằng `arm-none-eabi-gcc` trong sandbox (qua), **test trên board do người dùng chạy**.
+
+### 12.1 Giờ: lỗi tìm ra và sửa (`app.c`, `sim76xx.c/.h`)
+
+Triệu chứng: publish ra `00:29:22 05/01/2000`. Nguyên nhân:
+1. Không có nguồn nào ghi giờ vào RTC ngoài: giờ mạng có trong `sim76xx` nhưng `app.c` không đọc, và GPS chưa có fix.
+2. Tháng lệch: driver RX8130CE yêu cầu `month` 1–12, code GPS truyền `tm_mon` 0–11 (tháng 1 bị từ chối, tháng khác lệch 1); phần hiển thị cộng `+1` để che.
+3. `week` là mặt nạ bit một-bit (`RX8130CE_WEEK_xxx`), code cũ gán `mday/7+1`.
+4. Hai chỗ trong `WAKE_PUBLISH` ghi RTC vô điều kiện từ `gps.tim`, mà `gps.tim` còn cũ sau một RMC không hợp lệ.
+
+Cách sửa: RTC lưu giờ **UTC+7**, tháng 1–12. Thêm `rtc_set_local_secs()` (tính ngày/tháng/năm/thứ không phụ thuộc `mktime`), `rtc_sync_from_gps()` (chỉ ghi khi có fix) và `app_sync_rtc_from_modem()` (mỗi mẫu `CCLK` áp một lần, tối đa 3 lần thử). Thêm `clk_tick` và `sim76xx_get_utc_now()` để cộng thời gian trôi từ lúc đọc `CCLK`. Phần toán ngày giờ đã test riêng trên host so với `gmtime` (qua năm, năm nhuận, thứ, `mday = 32`).
+
+### 12.2 Phase 2: các thay đổi trong code
+
+| File | Thay đổi |
+|---|---|
+| `components/external_flash/sx_W25Q128.c/.h` | `power_down()` chờ WIP rồi mới cắt `Flash_PWR`; `power_up()` cấp rail + chờ 10 ms; thêm `sx_W25Q128_probe()` (thức từ power-down + kiểm JEDEC) và `sx_W25Q128_wait_idle()` |
+| `app/user/sx_ex_storage/sx_ex_storage.c/.h` | `sx_storage_sleep()` (chờ WIP, cắt rail, `HAL_SPI_DeInit`, CS = LOW), `sx_storage_wake()` (rail, `HAL_SPI_Init`, CS = HIGH, probe; lỗi thì cắt rail lại), `sx_storage_is_powered()`, `sx_storage_hold_off()`; `_ensure_power()` trong mọi hàm file. Log từng bước qua cờ `STORAGE_PWR_DEBUG` (mặc định 1, tắt khi đo dòng) |
+| `board/sx_board.c/.h` | `sx_board_imu_suspend/resume/is_active`, `sx_board_i2c1_off/on/is_on`, `sx_board_i2c1_scan()` (mức SCL/SDA + danh sách ACK) |
+| `app/app.c/.h` | bỏ `static` của `imu_calib_load()` để dùng lại (định dạng calib dạng text có sẵn, chưa ai gọi) |
+| `app/user/at_usb/test_at.c` | lệnh AT test thủ công (bảng dưới) |
+
+Lệnh AT test (cổng CDC, kết thúc bằng CR/LF, board không echo; phản hồi chỉ hiện khi terminal bật DTR):
+
+| Lệnh | Việc |
+|---|---|
+| `AT+FLASHPWR=0` / `=1` / `?` | tắt (có hold) / bật / hỏi trạng thái flash |
+| `AT+FLASHTEST=N` | N vòng: tắt, ghi, tắt, đọc lại, so sánh (tối đa 100; chặn vòng lặp chính khi chạy) |
+| `AT+FLASHPIN=0|1|?` | ghi/đọc thẳng `PC4`, không qua lớp storage (đo cực tính) |
+| `AT+IMUPWR=0` / `=1` / `?` | IMU suspend / resume (kèm `calib sys/gyro/acc/mag`) / trạng thái |
+| `AT+I2CPWR=0` / `=1` / `?` | DeInit / Init I2C1 |
+| `AT+I2CSCAN` | mức `SCL`/`SDA` và các địa chỉ ACK |
+| `AT+BQREAD` | đọc `VBUS_STAT`/`CHG_STAT` từ BQ |
+
+### 12.3 Kết quả test trên board
+
+| Hạng mục | Kết quả |
+|---|---|
+| `PC4` cực tính | `AT+FLASHPIN=1`: VCC flash = 0 V; `=0`: 3.3 V. **HIGH = tắt** |
+| `AT+FLASHPWR=0` ban đầu vẫn đo 3.3 V | Do auto-wake (`publish_gps` → `read_last_gps`, mục 5), không phải lỗi chân. Sau khi thêm hold thì giữ tắt được; log `wake: rail on` → `SPI1 Init` → `probe` → `Flash powered on`, không có `JEDEC ID mismatch`. **Chưa ghi nhận số đo VCC flash khi hold** (người dùng báo `FLASHPIN? = 1` sau `FLASHPWR=0`) |
+| `AT+FLASHTEST=5` và `=50` | `pass` đủ, `fail=0` |
+| Cắt nguồn IMU (`IMU_EN_PW` HIGH) | `SCL=0 SDA=0 ACK: none`, `AT+BQREAD` lỗi `rc=-1`; bật lại IMU lỗi `rc=-1` (bus còn kẹt). Cần reset board để hồi phục |
+| IMU SUSPEND | `SCL=1 SDA=1`, vẫn ACK `0x29 0x32 0x6A`, `AT+BQREAD` đọc được (`VBUS_STAT=4`), resume `active rc=0` |
+| Sau resume | `calib sys=0 gyro=0 acc=0 mag=0`: **không kết luận được** (chưa biết calib trước khi suspend, board nằm yên) |
+| `AT+I2CPWR=0` rồi `=1` | `BQREAD` báo `I2C1 is off`; sau khi bật lại đọc được, scan đủ 3 địa chỉ |
+
+### 12.4 Việc còn lại để đóng Phase 2 (CHƯA kiểm chứng)
+
+1. Reset board, đọc log boot: cần `Storage init OK`, không có dòng `format`, `config.json` còn nguyên (kiểm chứng filesystem sau các lần cắt nguồn flash).
+2. Sau khi bật lại I2C1, chờ một lần publish xem `time`/`date` vẫn đúng (RTC không bị ảnh hưởng).
+3. (Tùy chọn) Lắc board cho calib lên rồi suspend/resume để biết suspend có giữ calib không; đo dòng cả board khi flash tắt + IMU suspend so với lúc bật.
+
+### 12.5 Quan sát khác trong log (chưa xử lý)
+
+- Boot vẫn thấy `AT+COPS=0` trả `+CME ERROR: 100` kèm log `TIMEOUT response`, nhưng mạng vẫn lên và publish OK. Chưa xác nhận bản `fail_on_cme` (mục 11.1 #1) có đang chạy trên board không.
+- `RMC sentence is not valid` in liên tục khi GPS chưa fix (trong nhà), bình thường nhưng làm đầy log.
+- Dòng `LittleFS formatted and mounted successfully` chỉ là thông điệp log chung; code chỉ format khi `lfs_mount` lỗi.
+- `READ_BAT` (ADC MCU) vẫn ~0.74 V, không dùng được (Phase 6 thay bằng VBAT từ BQ).
+
+### 12.6 Phase 3 phải tính đến
+
+- IMU suspend/resume thay cho cắt nguồn; `I2C1` phải luôn truy cập được BQ/RTC khi cần.
+- Lớp `acquire/release` bọc `sx_board_i2c1_off/on`, `sx_storage_sleep/wake`, `sx_board_imu_suspend/resume`.
+- Gỡ/tắt `STORAGE_PWR_DEBUG` và các lệnh `AT+FLASH*` khi đo dòng ngủ (UART log cũng bị DeInit lúc ngủ).

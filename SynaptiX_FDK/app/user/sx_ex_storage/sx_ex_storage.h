@@ -59,6 +59,7 @@ sx_storage_err_t sx_storage_factory_reset(void);
 void             sx_storage_sleep        (void);
 sx_storage_err_t sx_storage_wake         (void);
 bool             sx_storage_is_powered   (void);
+void             sx_storage_hold_off     (bool hold);
 
 #ifdef __cplusplus
 }

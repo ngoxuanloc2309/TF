@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <stddef.h>
 #include "main.h"
 #include "usart.h"
 #include "gpio.h"
@@ -115,12 +116,13 @@ void sx_board_uart_resume_it(void);
 void check_charge(void);
 
 /* Phase 2: on-demand power */
-int     sx_board_imu_off(void);
-int     sx_board_imu_on(void);
-uint8_t sx_board_imu_is_on(void);
+int     sx_board_imu_suspend(void);      /* IMU stays powered: cutting its supply kills the I2C1 bus */
+int     sx_board_imu_resume(void);
+uint8_t sx_board_imu_is_active(void);
 int     sx_board_i2c1_off(void);
 int     sx_board_i2c1_on(void);
 uint8_t sx_board_i2c1_is_on(void);
+int     sx_board_i2c1_scan(char *out, size_t n);   /* line levels + ACK list into out */
 
 extern Board_t board;
 

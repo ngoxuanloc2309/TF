@@ -1,4 +1,6 @@
 #include "sx_board.h"
+#include <stdio.h>
+#include <stddef.h>
 #include "stm32h5xx_hal.h"
 #include "tusb.h"
 #include "usb.h"
@@ -209,47 +211,59 @@ void sx_board_init(void)
 /*  Phase 2: on-demand power for the IMU and for I2C1                   */
 /* ------------------------------------------------------------------ */
 
-static uint8_t s_imu_powered = 1;      /* sx_board_init() leaves the IMU on */
+static uint8_t s_imu_active = 1;       /* 1 = NORMAL/NDOF running, 0 = SUSPEND */
+static uint8_t s_i2c1_on = 1;
+int sx_board_i2c1_scan(char *out, size_t n);
 
-/* Cut the IMU supply (IMU_EN_PW HIGH) and hold IMU_RESET low so nothing is driven into the unpowered chip. */
-int sx_board_imu_off(void)
+/* The IMU supply must NOT be cut: measured on board v1.4, with IMU_EN_PW high SCL and SDA are pulled to 0
+ * (the unpowered BNO055 clamps the shared bus), and BQ (0x6A) and RTC (0x32) stop answering. So the IMU
+ * stays powered and goes into the BNO055 SUSPEND power mode instead. */
+
+/* IMU -> SUSPEND (all sensors and the internal MCU sleep; registers are not updated). */
+int sx_board_imu_suspend(void)
 {
-    if (!s_imu_powered) return 0;
+    if (!s_imu_active) return 0;
 
-    bno055_power_off(&board.imu);
-    sx_gpio_write(&s_imu_reset, SX_GPIO_LOW);
-    board.imu.initialized = false;
-    s_imu_powered = 0;
-    log_info("BOARD", "IMU powered off");
-    return 0;
-}
-
-/* Power the IMU on and bring it back to a usable state (reset pulse + bno055_init). The IMU loses its
- * calibration with the supply, so the caller restores it afterwards with imu_calib_load() (app.c); that
- * reads IMU_CALIB_FILE_PATH from the external flash, which sx_storage_* powers on by itself. */
-int sx_board_imu_on(void)
-{
-    if (s_imu_powered && board.imu.initialized) return 0;
-
-    bno055_power_on(&board.imu);                       /* EN low + settle */
-    int rc = bno055_init(&board.imu, &board.i2c1, BNO055_I2C_ADDR_DEFAULT, &s_imu_en, &s_imu_reset);
+    int rc = bno055_set_pwr_mode(&board.imu, BNO055_PWR_MODE_SUSPEND);   /* goes to CONFIG first */
     if (rc != 0) {
-        log_error("BOARD", "IMU init failed (rc=%d), powering it off again", rc);
-        s_imu_powered = 1;                             /* so that off() really cuts it */
-        sx_board_imu_off();
+        log_error("BOARD", "IMU suspend failed (rc=%d)", rc);
         return rc;
     }
-    s_imu_powered = 1;
+    board.imu.initialized = false;           /* reads are refused while suspended */
+    s_imu_active = 0;
+    log_info("BOARD", "IMU suspended");
     return 0;
 }
 
-uint8_t sx_board_imu_is_on(void)
+/* IMU -> NORMAL power mode and NDOF fusion again. No reset pulse and no re-init: the chip never lost power.
+ * Whether SUSPEND keeps the calibration is not confirmed; the caller may restore it with imu_calib_load(). */
+int sx_board_imu_resume(void)
 {
-    return s_imu_powered;
+    if (s_imu_active) return 0;
+
+    int rc = bno055_set_pwr_mode(&board.imu, BNO055_PWR_MODE_NORMAL);
+    if (rc == 0) {
+        sx_delay_ms(10);
+        rc = bno055_set_opr_mode(&board.imu, BNO055_OPR_MODE_NDOF);
+    }
+    if (rc != 0) {
+        char diag[96];
+        sx_board_i2c1_scan(diag, sizeof(diag));
+        log_error("BOARD", "IMU resume failed (rc=%d) | bus: %s", rc, diag);
+        return rc;
+    }
+    board.imu.initialized = true;
+    s_imu_active = 1;
+    log_info("BOARD", "IMU resumed");
+    return 0;
+}
+
+uint8_t sx_board_imu_is_active(void)
+{
+    return s_imu_active;
 }
 
 /* I2C1 (BQ, RX8130CE, BNO055 share it). DeInit puts PB6/PB7 in analog mode; the external pull-ups stay. */
-static uint8_t s_i2c1_on = 1;
 
 int sx_board_i2c1_off(void)
 {
@@ -267,6 +281,29 @@ int sx_board_i2c1_on(void)
     if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK) return -1;
     s_i2c1_on = 1;
     return 0;
+}
+
+/* Bus health check for the Phase 2 tests: line levels + ACK list. Writes e.g. "SCL=1 SDA=1 ACK: 0x29 0x32 0x6A".
+ * With I2C1 DeInit'd the pins are analog and read 0, so the levels are only meaningful while I2C1 is on. */
+int sx_board_i2c1_scan(char *out, size_t n)
+{
+    size_t k = 0;
+    if (!out || n < 32) return -1;
+
+    k += (size_t)snprintf(out + k, n - k, "SCL=%d SDA=%d ACK:",
+                          (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6),
+                          (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_7));
+    int found = 0;
+    if (s_i2c1_on) {
+        for (uint8_t a = 0x08; a < 0x78 && k + 6 < n; a++) {
+            if (sx_i2c_is_device_ready(&board.i2c1, (uint16_t)(a << 1), 1, 10) == 0) {
+                k += (size_t)snprintf(out + k, n - k, " 0x%02X", a);
+                found++;
+            }
+        }
+    }
+    if (!found) snprintf(out + k, n - k, " none");
+    return found;
 }
 
 uint8_t sx_board_i2c1_is_on(void)
