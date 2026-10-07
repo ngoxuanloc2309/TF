@@ -26,7 +26,7 @@ void sx_sleep_manager_init(sx_sleep_manager_t *mgr,
     mgr->check_ms        = 0;
     mgr->wake_timeout_ms = 0;
 
-    log_info(TAG, "init OK — waiting for config values");
+    log_debug(TAG, "init OK — waiting for config values");
 }
 
 /* Keep the debug log in the wake-fake loop (needs the log UART awake). Set 0 when measuring sleep current. */
@@ -103,7 +103,7 @@ void sx_sleep_manager_enter(sx_sleep_manager_t *mgr)
         sx_sleep_set_rtc_wake(mgr->sleep, period);
 
 #if SX_WAKE_FAKE_LOG
-        log_info(TAG, ">>> Entering STOP mode NOW (%lu s, elapsed %lu/%lu s)", period, elapsed_s, sleep_sec);
+        log_debug(TAG, ">>> Entering STOP mode NOW (%lu s, elapsed %lu/%lu s)", period, elapsed_s, sleep_sec);
         sx_delay_ms(10);                             /* let the log UART drain */
 #endif
         sx_sleep_enter_stop(mgr->sleep);
@@ -138,7 +138,7 @@ void sx_sleep_manager_enter(sx_sleep_manager_t *mgr)
             break;
         }
 #if SX_WAKE_FAKE_LOG
-        log_info(TAG, "wake-fake: VBUS_STAT=%u -> no USB", board.bq.vbus_stat);
+        log_debug(TAG, "wake-fake: VBUS_STAT=%u -> no USB", board.bq.vbus_stat);
 #endif
 
         /* Battery only, and GPS/SIM/flash are off: the quietest moment to read VBAT. When it reaches VBAT_CUT_OFF
@@ -174,7 +174,7 @@ void sx_sleep_manager_wake_process(sx_sleep_manager_t *mgr, uint32_t delta_ms)
 
     case SX_WAKE_STEP_GPS_ON_FIRST:
         board_gps_uart_resume_it();
-        log_info(TAG, "Power on GPS first");
+        log_debug(TAG, "Power on GPS first");
         gps_power_on(mgr->module.gps);
         //board_gps_uart_resume_it();
         mgr->elapsed.gps_elapsed_ms = 0;
@@ -199,7 +199,7 @@ void sx_sleep_manager_wake_process(sx_sleep_manager_t *mgr, uint32_t delta_ms)
         break;
 
     case SX_WAKE_STEP_UART_RESUME:
-        log_info(TAG, "Resume UART + Power on SIM");
+        log_debug(TAG, "Resume UART + Power on SIM");
 
         sx_board_uart_resume_it();
 

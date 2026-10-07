@@ -221,7 +221,7 @@ static void app_sync_rtc_from_modem(void)
 
 static void get_time_exrtc(void){
     rx8130ce_get_time(&board.rtc, &g_app.time);
-    log_info("RTC", "%02d:%02d:%02d %02d/%02d/20%02d",
+    log_debug("RTC", "%02d:%02d:%02d %02d/%02d/20%02d",
          g_app.time.hour, g_app.time.min, g_app.time.sec,
          g_app.time.day, g_app.time.month, g_app.time.year);
 }
@@ -314,7 +314,7 @@ bool imu_calib_load(void)
     }
 
     bno055_set_calib_data(&board.imu, &cal);
-    log_info(TAG, "calib loaded OK");
+    log_debug(TAG, "calib loaded OK");
     return true;
 }
 
@@ -347,7 +347,7 @@ static void _handle_usb_connected(void)
      * here: the stack never saw the unplug (no VBUS sensing, IRQ off in STOP), so it still reports the old
      * configuration (log shows "USB tiny resumed"). Always toggle the D+ pull-up so the host sees a fresh
      * plug and enumerates CDC + MSC again. */
-    log_info(TAG, "USB re-enumerate (tud_mounted=%d tud_connected=%d)", tud_mounted() ? 1 : 0, tud_connected() ? 1 : 0);
+    log_debug(TAG, "USB re-enumerate (tud_mounted=%d tud_connected=%d)", tud_mounted() ? 1 : 0, tud_connected() ? 1 : 0);
     sx_usb_tiny_msc_disconnect();
     sx_delay_ms(500);
 
@@ -471,7 +471,7 @@ static void publish_gsm(char *mode)
              g_app.time.day, g_app.time.month, g_app.time.year);
 
     sx_user_mqtt_publish(topic, msg);
-    log_info(TAG, "GSM: %s", msg);
+    log_debug(TAG, "GSM: %s", msg);
 }
 
 // static void publish_gps(char *mode)
@@ -556,7 +556,7 @@ static void publish_gps(char *mode)
              "{\"v\":\"%s\",\"time\":%ld}",
              v_str, (long)unix_ts);
     sx_user_mqtt_publish(topic, msg);
-    log_info(TAG, "GPS: %s", msg);
+    log_debug(TAG, "GPS: %s", msg);
 }
 
 static void read_last_gps(void)
@@ -596,7 +596,7 @@ static void read_last_gps(void)
 
     s_tail_buf[end + 1] = '\0';
     char *last_line = (char *)(s_tail_buf + start);
-    log_info(TAG, "Last log line: %s", last_line);
+    log_debug(TAG, "Last log line: %s", last_line);
 
     // Parse
     int   fix = 0, rssi = 0;
@@ -754,7 +754,7 @@ static void read_last_gps(void)
 
 static void _sync_gps_log_to_disk(void)
 {
-    log_info(TAG, "Syncing last GPS log entry to disk...");
+    log_debug(TAG, "Syncing last GPS log entry to disk...");
 
     if (!sx_storage_exists(GPS_LOG_FILE_PATH))
     {
@@ -833,7 +833,7 @@ static void app_read_config_file(TrackingApp_t *app)
         _apply_default_config(&s_mqtt_cfg);
         return;
     }
-    log_info("AppCfg", "config.json found, size=%lu bytes", fno.fsize);
+    log_debug("AppCfg", "config.json found, size=%lu bytes", fno.fsize);
 
     /*  3. read content file  */
     uint32_t out_len = 0;
@@ -849,7 +849,7 @@ static void app_read_config_file(TrackingApp_t *app)
         return;
     }
     config_json.s_cfg_buf[out_len] = '\0';
-    log_info("AppCfg", "cfg.json content: %s", (char *)config_json.s_cfg_buf);
+    log_debug("AppCfg", "cfg.json content: %s", (char *)config_json.s_cfg_buf);
 
     /*  4. Parse JSON  */
     cJSON *root = cJSON_Parse((const char *)config_json.s_cfg_buf);
@@ -866,9 +866,9 @@ static void app_read_config_file(TrackingApp_t *app)
         cJSON *user = cJSON_GetObjectItem(apn, "user");
         cJSON *pass = cJSON_GetObjectItem(apn, "password");
 
-        log_info("AppCfg", "APN name    : %s", (!name || cJSON_IsNull(name))   ? "NULL" : name->valuestring);
-        log_info("AppCfg", "APN user    : %s", (!user || cJSON_IsNull(user))   ? "NULL" : user->valuestring);
-        log_info("AppCfg", "APN pass    : %s", (!pass || cJSON_IsNull(pass))   ? "NULL" : pass->valuestring);
+        log_debug("AppCfg", "APN name    : %s", (!name || cJSON_IsNull(name))   ? "NULL" : name->valuestring);
+        log_debug("AppCfg", "APN user    : %s", (!user || cJSON_IsNull(user))   ? "NULL" : user->valuestring);
+        log_debug("AppCfg", "APN pass    : %s", (!pass || cJSON_IsNull(pass))   ? "NULL" : pass->valuestring);
 
         if (name && !cJSON_IsNull(name) && name->valuestring) {
             strncpy(config_json.s_apn_name, name->valuestring, sizeof(config_json.s_apn_name) - 1);
@@ -887,11 +887,11 @@ static void app_read_config_file(TrackingApp_t *app)
         cJSON *user      = cJSON_GetObjectItem(mqtt, "user_name");
         cJSON *pass      = cJSON_GetObjectItem(mqtt, "password");
 
-        log_info("AppCfg", "MQTT host     : %s", (host && host->valuestring)           ? host->valuestring      : "NULL");
-        log_info("AppCfg", "MQTT port     : %d", port                                  ? port->valueint         : 0);
-        log_info("AppCfg", "MQTT client_id: %s", (client_id && client_id->valuestring) ? client_id->valuestring : "NULL");
-        log_info("AppCfg", "MQTT user     : %s", (user && user->valuestring)            ? user->valuestring      : "NULL");
-        log_info("AppCfg", "MQTT pass     : %s", (pass && pass->valuestring)            ? pass->valuestring      : "NULL");
+        log_debug("AppCfg", "MQTT host     : %s", (host && host->valuestring)           ? host->valuestring      : "NULL");
+        log_debug("AppCfg", "MQTT port     : %d", port                                  ? port->valueint         : 0);
+        log_debug("AppCfg", "MQTT client_id: %s", (client_id && client_id->valuestring) ? client_id->valuestring : "NULL");
+        log_debug("AppCfg", "MQTT user     : %s", (user && user->valuestring)            ? user->valuestring      : "NULL");
+        log_debug("AppCfg", "MQTT pass     : %s", (pass && pass->valuestring)            ? pass->valuestring      : "NULL");
 
         if (host && host->valuestring) {
             strncpy(config_json.s_mqtt_host, host->valuestring, sizeof(config_json.s_mqtt_host) - 1);
@@ -920,7 +920,7 @@ static void app_read_config_file(TrackingApp_t *app)
     cJSON *sleep_t = cJSON_GetObjectItem(root, "time_sleeps");
     if (sleep_t && cJSON_IsNumber(sleep_t) && sleep_t->valueint > 0) {
         config_json.time_sleep_ms = (uint32_t)sleep_t->valueint * 1000U;
-        log_info("AppCfg", "time_sleeps loaded: %lu ms", config_json.time_sleep_ms);
+        log_debug("AppCfg", "time_sleeps loaded: %lu ms", config_json.time_sleep_ms);
     } else {
         log_warn("AppCfg", "No valid 'time_sleeps' — using default %lu ms",
                 config_json.time_sleep_ms);
@@ -928,7 +928,7 @@ static void app_read_config_file(TrackingApp_t *app)
 
     /* 8. Device ID */
     cJSON *device_t = cJSON_GetObjectItem(root, "device_id");
-    log_info("AppCfg", "Device ID     : %s", (device_t && device_t->valuestring) ? device_t->valuestring : "NULL");
+    log_debug("AppCfg", "Device ID     : %s", (device_t && device_t->valuestring) ? device_t->valuestring : "NULL");
     if (device_t && device_t->valuestring) {
         strncpy(config_json.s_device_name, device_t->valuestring, sizeof(config_json.s_device_name) - 1);
         strncpy(g_app.device_name, config_json.s_device_name, sizeof(g_app.device_name) - 1);
@@ -937,7 +937,7 @@ static void app_read_config_file(TrackingApp_t *app)
     cJSON *time_pub_t = cJSON_GetObjectItem(root, "time_publish");
     if (time_pub_t && cJSON_IsNumber(time_pub_t) && time_pub_t->valueint > 0) {
         config_json.s_time_publish = (uint32_t)time_pub_t->valueint * 1000U;
-        log_info("AppCfg", "time_publish loaded: %lu ms", config_json.s_time_publish);
+        log_debug("AppCfg", "time_publish loaded: %lu ms", config_json.s_time_publish);
     } else {
         log_warn("AppCfg", "No valid 'time_publish' — using default %lu ms",
                 config_json.s_time_publish);
@@ -974,7 +974,7 @@ void app_init(void)
     g_app.sleep_requested = 0;
     g_app.usb_connect_pending = 0;
     
-    log_info(TAG, "Read Config file...");
+    log_debug(TAG, "Read Config file...");
 
     app_read_config_file(&g_app);
     
@@ -1033,7 +1033,7 @@ static void bq_phase0_debug(uint32_t delta_ms)
 
     /* Passive: bq25622_poll() (app_vbus_process) does the I2C read, this only prints it. */
     if (bq->vbus_stat != last_vbus || hb_acc >= BQ_PHASE0_HEARTBEAT_MS) {
-        log_info(TAG, "BQ VBUS_STAT=%u%u%u CHG_STAT=%u -> %s",
+        log_debug(TAG, "BQ VBUS_STAT=%u%u%u CHG_STAT=%u -> %s",
                  (bq->vbus_stat >> 2) & 1, (bq->vbus_stat >> 1) & 1, bq->vbus_stat & 1,
                  bq->chg_stat,
                  bq->vbus_stat == BQ25622_VBUS_NONE ? "on battery" :
@@ -1133,7 +1133,7 @@ void app_process(uint32_t timestamp)
     if (sx_usb_tiny_available(&g_app.board->usb)) {
         uint8_t buf[64];
         int len = sx_usb_tiny_read(&g_app.board->usb, buf, sizeof(buf), 10);
-        log_info(TAG, "USB Tiny received %d bytes: %.*s", len, len, buf);
+        log_debug(TAG, "USB Tiny received %d bytes: %.*s", len, len, buf);
         if (len > 0) {
             app_at_process((const char *)buf, len);
         }

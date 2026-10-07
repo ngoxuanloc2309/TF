@@ -417,7 +417,7 @@ int sim76xx_start(sim76xx_t *dce){
         log_warn(TAG, "start: modem busy");
         return -1;
     }
-    log_info(TAG, "Starting init flow");
+    log_debug(TAG, "Starting init flow");
     
     dce->state = SIM76XX_STATE_AT;
     dce->retry_count = 0;
@@ -637,7 +637,7 @@ static void cb_csq(modem_t *modem, const char *response, modem_response_st_t res
             p = strchr(p, ',');
             if (p) dce->ber = (int)strtol(p + 1, NULL, 10);
         }
-        log_info(TAG, "RSSI: %d  BER: %d", dce->rssi, dce->ber);
+        log_debug(TAG, "RSSI: %d  BER: %d", dce->rssi, dce->ber);
         
         if(dce->rssi < 15 || dce->rssi == 99){
             dce->state = SIM76XX_STATE_CGSN;
@@ -813,7 +813,7 @@ static void cb_ipaddr(modem_t *modem, const char *response, modem_response_st_t 
         }
     }
     /* whether you have an IP address or not, it will still switch to READY. */
-    log_info(TAG, "Network ready - IP: %s", dce->ip);
+    log_debug(TAG, "Network ready - IP: %s", dce->ip);
 #if SIM76XX_TIME_PROBE
     time_probe_start(dce);          /* CGMM / CTZU / CCLK, then continues with CGDCONT? */
 #else
@@ -933,7 +933,7 @@ static void log_probe(const char *cmd, modem_response_st_t res, const char *resp
         line[n++] = ch;
     }
     line[n] = '\0';
-    log_info(TAG, "TIME %s -> %s | %s", cmd,
+    log_debug(TAG, "TIME %s -> %s | %s", cmd,
              res == MODEM_RESPONSE_SUCCESS ? "OK" : (res == MODEM_RESPONSE_FAIL ? "FAIL" : "TIMEOUT"),
              line);
 }
@@ -959,7 +959,7 @@ static void cb_tp_cgmm(modem_t *modem, const char *response, modem_response_st_t
     sim76xx_t *dce = pDCE(arg);
     if (res == MODEM_RESPONSE_SUCCESS && response) {
         first_line_after_echo(response, "AT+CGMM", dce->model, sizeof(dce->model));
-        log_info(TAG, "TIME model (CGMM): %s", dce->model[0] ? dce->model : "(empty)");
+        log_debug(TAG, "TIME model (CGMM): %s", dce->model[0] ? dce->model : "(empty)");
     } else {
         log_probe("AT+CGMM", res, modem->buff);
     }
@@ -1002,14 +1002,14 @@ static void cb_tp_cclk(modem_t *modem, const char *response, modem_response_st_t
         int32_t secs = (int32_t)(utc % 86400);
         if (secs < 0) { secs += 86400; days--; }
         civil_from_days(days, &uy, &um, &ud);
-        log_info(TAG, "TIME parsed: zone=%d quarters (offset %d min) -> UTC %04d-%02d-%02d %02d:%02d:%02d (unix %lu)",
+        log_debug(TAG, "TIME parsed: zone=%d quarters (offset %d min) -> UTC %04d-%02d-%02d %02d:%02d:%02d (unix %lu)",
                  tz_q, tz_q * 15, uy, um, ud, secs / 3600, (secs % 3600) / 60, secs % 60, (unsigned long)utc);
         if (year >= SIM76XX_CLK_MIN_YEAR && utc > 0) {
             dce->clk_valid = 1;
             dce->clk_tz_q  = (int16_t)tz_q;
             dce->clk_utc   = (uint32_t)utc;
             dce->clk_tick  = sx_gettick();
-            log_info(TAG, "TIME valid (year %d >= %d)", year, SIM76XX_CLK_MIN_YEAR);
+            log_debug(TAG, "TIME valid (year %d >= %d)", year, SIM76XX_CLK_MIN_YEAR);
         } else {
             log_warn(TAG, "TIME NOT valid: year %d < %d (modem clock probably not synced by network yet)",
                      year, SIM76XX_CLK_MIN_YEAR);
@@ -1026,7 +1026,7 @@ static void time_probe_start(sim76xx_t *dce)
 {
     dce->state = SIM76XX_STATE_TIME_PROBE;
     dce->clk_valid = 0;
-    log_info(TAG, "TIME probe start (CGMM, CTZU, CCLK)");
+    log_debug(TAG, "TIME probe start (CGMM, CTZU, CCLK)");
     send_probe(dce, "AT+CGMM\r\n", cb_tp_cgmm);
 }
 #endif /* SIM76XX_TIME_PROBE */
@@ -1193,7 +1193,7 @@ int sim76xx_mqtt_publish(sim76xx_t *dce, const char *topic, const char *message,
     s_pub_final_cb = cb;
     s_pub_timeout_ms = timeout_ms;
     snprintf(s_mqtt_cmd_buf, sizeof(s_mqtt_cmd_buf), "AT+CMQTTTOPIC=0,%u\r", (unsigned)strlen(s_pub_topic));
-    log_info(TAG, "topic len=%d topic=[%s]", strlen(s_pub_topic), s_pub_topic);
+    log_debug(TAG, "topic len=%d topic=[%s]", strlen(s_pub_topic), s_pub_topic);
     return mqtt_send_cmd(dce, s_mqtt_cmd_buf, ">", cb_pub_topic_prompt, timeout_ms);
 }
 

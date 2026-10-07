@@ -53,7 +53,7 @@ static void dispatch_next(void){
 
 static void _on_connected(sx_mqtt_t *mqtt){
     (void)mqtt;
-    log_info(TAG, "MQTT connected");
+    log_debug(TAG, "MQTT connected");
     if (s_on_connected) s_on_connected();
 }
 

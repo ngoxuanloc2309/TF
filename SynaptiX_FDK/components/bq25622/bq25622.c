@@ -60,7 +60,7 @@ int bq25622_init(bq25622_t *dev, sx_i2c_t *i2c)
         uint8_t s0 = 0xEE, s1 = 0xEE;
         int e0 = reg_read8(dev, BQ25622_REG_CHARGER_STATUS_0, &s0);
         int e1 = reg_read8(dev, BQ25622_REG_CHARGER_STATUS_1, &s1);
-        log_info(TAG, "raw @0x%02X: PART_INFO(0x38)=0x%02X STATUS0(0x1D)=0x%02X%s STATUS1(0x1E)=0x%02X%s",
+        log_debug(TAG, "raw @0x%02X: PART_INFO(0x38)=0x%02X STATUS0(0x1D)=0x%02X%s STATUS1(0x1E)=0x%02X%s",
                  BQ25622_I2C_ADDR >> 1, pi, s0, e0 ? "(err)" : "", s1, e1 ? "(err)" : "");
     }
     dev->online      = 1;
@@ -132,7 +132,7 @@ static int reg8_update(bq25622_t *dev, uint8_t reg, uint8_t mask, uint8_t val,
                   name, reg, cur, val);
         return -1;
     }
-    log_info(TAG, "%s set (reg 0x%02X = 0x%02X)", name, reg, cur);
+    log_debug(TAG, "%s set (reg 0x%02X = 0x%02X)", name, reg, cur);
     return 0;
 }
 
@@ -157,7 +157,7 @@ static int reg16_update(bq25622_t *dev, uint8_t reg, uint16_t mask, uint16_t val
                   name, reg, cur, val);
         return -1;
     }
-    log_info(TAG, "%s set (reg 0x%02X = 0x%04X)", name, reg, cur);
+    log_debug(TAG, "%s set (reg 0x%02X = 0x%04X)", name, reg, cur);
     return 0;
 }
 
@@ -361,8 +361,10 @@ int bq25622_check_vbat_cutoff(bq25622_t *dev)
 
     if (m == 0) {
         low = (vbat <= (uint16_t)dev->cfg.cutoff);
-        log_info(TAG, "VBAT=%u mV (cutoff %u mV)%s", vbat, (unsigned)dev->cfg.cutoff,
-                 low ? " LOW" : "");
+        if (low)
+            log_info(TAG, "VBAT=%u mV (cutoff %u mV) LOW", vbat, (unsigned)dev->cfg.cutoff);
+        else
+            log_debug(TAG, "VBAT=%u mV (cutoff %u mV)", vbat, (unsigned)dev->cfg.cutoff);
     } else if (m == -2) {
         /* ADC refused to start with no VBUS: VBAT is at/below VBAT_LOWV (2.7..2.9 V). */
         log_warn(TAG, "ADC refused (VBAT probably <= VBAT_LOWV)");
@@ -414,24 +416,24 @@ int bq25622_dump_regs(bq25622_t *dev)
     bad |= reg_read8(dev, BQ25622_REG_CHARGER_CTRL_3, &c3);
     bad |= reg_read8(dev, BQ25622_REG_NTC_CONTROL_0,  &ntc);
 
-    log_info(TAG, "dump: PART_INFO=0x%02X PN=%u REV=%u", pi,
+    log_debug(TAG, "dump: PART_INFO=0x%02X PN=%u REV=%u", pi,
              (unsigned)((pi & BQ25622_PN_MASK) >> BQ25622_PN_SHIFT), (unsigned)(pi & 0x07U));
-    log_info(TAG, "dump: STATUS0=0x%02X STATUS1=0x%02X (CHG_STAT=%u VBUS_STAT=%u) FAULT0=0x%02X "
+    log_debug(TAG, "dump: STATUS0=0x%02X STATUS1=0x%02X (CHG_STAT=%u VBUS_STAT=%u) FAULT0=0x%02X "
                   "(VBUS_F=%u BAT_F=%u SYS_F=%u OTG_F=%u TSHUT=%u TS_STAT=%u)",
              s0, s1,
              (unsigned)((s1 & BQ25622_CHG_STAT_MASK) >> BQ25622_CHG_STAT_SHIFT),
              (unsigned)(s1 & BQ25622_VBUS_STAT_MASK), f0,
              (unsigned)((f0 >> 7) & 1U), (unsigned)((f0 >> 6) & 1U), (unsigned)((f0 >> 5) & 1U),
              (unsigned)((f0 >> 4) & 1U), (unsigned)((f0 >> 3) & 1U), (unsigned)(f0 & 0x07U));
-    log_info(TAG, "dump: FLAG0=0x%02X FLAG1=0x%02X FAULT_FLAG0=0x%02X (cleared by this read; WD_FLAG=%u)",
+    log_debug(TAG, "dump: FLAG0=0x%02X FLAG1=0x%02X FAULT_FLAG0=0x%02X (cleared by this read; WD_FLAG=%u)",
              fl0, fl1, ffl, (unsigned)(fl0 & 1U));
-    log_info(TAG, "dump: ICHG=%u mA VREG=%u mV IINDPM=%u mA IPRECHG=%u mA ITERM=%u mA",
+    log_debug(TAG, "dump: ICHG=%u mA VREG=%u mV IINDPM=%u mA IPRECHG=%u mA ITERM=%u mA",
              (unsigned)(((ich >> 5) & 0x3FU) * 40U), (unsigned)(((vrg >> 3) & 0x1FFU) * 10U),
              (unsigned)(((iin >> 4) & 0xFFU) * 20U), (unsigned)(((ipc >> 3) & 0x1FU) * 10U),
              (unsigned)(((itm >> 2) & 0x3FU) * 5U));
     {
         uint8_t pk = (uint8_t)(c3 >> BQ25622_CTRL3_IBAT_PK_SHIFT);
-        log_info(TAG, "dump: CHG_CTRL=0x%02X CTRL0=0x%02X (EN_CHG=%u WATCHDOG=%u) CTRL2=0x%02X "
+        log_debug(TAG, "dump: CHG_CTRL=0x%02X CTRL0=0x%02X (EN_CHG=%u WATCHDOG=%u) CTRL2=0x%02X "
                       "CTRL3=0x%02X (IBAT_PK=%s VBAT_UVLO=%s) NTC0=0x%02X (TS_IGNORE=%u)",
                  chg, c0, (unsigned)((c0 >> 5) & 1U), (unsigned)(c0 & BQ25622_CTRL0_WATCHDOG_MASK),
                  c2, c3,

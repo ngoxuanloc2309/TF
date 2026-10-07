@@ -31,11 +31,11 @@ static void set_enter_full_mode(void);
 void dcd_fs_msp_init(uint8_t rhport)
 {
     (void)rhport;
-    log_info(TAG, "dcd_fs_msp_init called");
+    log_debug(TAG, "dcd_fs_msp_init called");
     hpcd_USB_DRD_FS.Instance = USB_DRD_FS;
     HAL_PCD_MspInit(&hpcd_USB_DRD_FS);
     HAL_Delay(100);
-    log_info(TAG, "MSP init done!");
+    log_debug(TAG, "MSP init done!");
 }
 
 void USB_DRD_FS_IRQHandler(void)
@@ -110,21 +110,21 @@ static void bq_start(void)
 static void i2c1_scan_debug(void)
 {
     /* Idle levels: with pull-ups present and no device holding the bus, both must read 1. */
-    log_info(TAG, "I2C1 idle: SCL(PB6)=%d SDA(PB7)=%d (expect 1/1)",
+    log_debug(TAG, "I2C1 idle: SCL(PB6)=%d SDA(PB7)=%d (expect 1/1)",
              (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6),
              (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_7));
 
     uint8_t found = 0;
     for (uint8_t a = 0x08; a < 0x78; a++) {
         if (sx_i2c_is_device_ready(&board.i2c1, (uint16_t)(a << 1), 1, 10) == 0) {
-            log_info(TAG, "I2C1 scan: ACK at 0x%02X%s", a,
+            log_debug(TAG, "I2C1 scan: ACK at 0x%02X%s", a,
                      a == 0x6A ? "  <- BQ25628" :
                      a == 0x32 ? "  <- RX8130CE" :
                      (a == 0x28 || a == 0x29) ? "  <- BNO055" : "");
             found++;
         }
     }
-    log_info(TAG, "I2C1 scan done: %u device(s)", found);
+    log_debug(TAG, "I2C1 scan done: %u device(s)", found);
     if (!board.bq.online) {
         log_info(TAG, "BQ25628 retry init after scan...");
         if (bq25622_init(&board.bq, &board.i2c1) == 0)
@@ -163,7 +163,7 @@ void sx_board_init(void)
     #if BOARD_USE_MSC
     sx_user_msc_init();
     sx_user_msc_create_disk(USER_DISK_LABEL_CREATE);
-    log_info(TAG, "MSC disk created");
+    log_debug(TAG, "MSC disk created");
     #endif
     board.usb_cfg.rx_buf_size = 256;
     board.usb_cfg.tx_buf_size = 256;
@@ -241,7 +241,7 @@ int sx_board_imu_suspend(void)
     }
     board.imu.initialized = false;           /* reads are refused while suspended */
     s_imu_active = 0;
-    log_info("BOARD", "IMU suspended");
+    log_debug("BOARD", "IMU suspended");
     return 0;
 }
 
@@ -264,7 +264,7 @@ int sx_board_imu_resume(void)
     }
     board.imu.initialized = true;
     s_imu_active = 1;
-    log_info("BOARD", "IMU resumed");
+    log_debug("BOARD", "IMU resumed");
     return 0;
 }
 
@@ -381,7 +381,7 @@ void tud_umount_cb(void) {
     //(void)remote_wakeup_en;
     sx_gpio_write(&s_charge, SX_GPIO_LOW);
     sx_gpio_write(&s_dis_charge, SX_GPIO_HIGH);
-    log_info(TAG,"USB discharge");
+    log_debug(TAG,"USB discharge");
     /* No sleep request here: VBUS_STAT of the BQ decides (a host reset/unmount while VBUS is still present must not sleep) */
     log_info(TAG, "USB tiny disconnected");
     // set_enter_sleep_mode();
@@ -399,7 +399,7 @@ void tud_suspend_cb(bool remote_wakeup_en) {
 }
 
 void tud_resume_cb(void) {
-    log_info(TAG, "USB tiny resumed");
+    log_debug(TAG, "USB tiny resumed");
     // HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12, 0);
     // HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, 1);
     //set_enter_full_mode();
@@ -427,5 +427,5 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 }
 
 void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts) {
-    log_info("USB", "CDC line state: dtr=%d rts=%d", dtr, rts);
+    log_debug("USB", "CDC line state: dtr=%d rts=%d", dtr, rts);
 }

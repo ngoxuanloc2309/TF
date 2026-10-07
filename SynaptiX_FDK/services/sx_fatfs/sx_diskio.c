@@ -42,16 +42,16 @@ static void _cache_flush(void)
 
     uint32_t addr = FLASH_STORAGE_BASE + (uint32_t)s_cache_sector * FLASH_SECTOR_SIZE_BYTES;
 
-    log_info("DISKIO", "flush sector=%ld addr=0x%08lX", s_cache_sector, addr);
-    log_info("DISKIO", ">>> FLASH WRITE sector=%ld addr=0x%08lX", 
+    log_debug("DISKIO", "flush sector=%ld addr=0x%08lX", s_cache_sector, addr);
+    log_debug("DISKIO", ">>> FLASH WRITE sector=%ld addr=0x%08lX", 
              s_cache_sector, addr);
 
     sx_flash_unlock();
-    log_info("DISKIO", "erase start");
+    log_debug("DISKIO", "erase start");
     sx_flash_erase(addr, FLASH_SECTOR_SIZE_BYTES);
-    log_info("DISKIO", "erase done, write start");
+    log_debug("DISKIO", "erase done, write start");
     sx_flash_write(addr, s_cache_buf, FLASH_SECTOR_SIZE_BYTES);
-    log_info("DISKIO", "write done");
+    log_debug("DISKIO", "write done");
     sx_flash_lock();
 
     s_cache_dirty = false;

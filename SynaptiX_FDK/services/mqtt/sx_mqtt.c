@@ -225,7 +225,7 @@ static void cb_start_after_stop(modem_t *modem, const char *resp,
 static void cb_start(modem_t *modem, const char *resp, modem_response_st_t res, void *arg){
     (void)modem; (void)arg;
     sx_mqtt_t *mqtt = s_instance;
-    log_info(TAG, "CMQTTSTART response: [%s] res=%d",  resp ? resp : "NULL", res);
+    log_debug(TAG, "CMQTTSTART response: [%s] res=%d",  resp ? resp : "NULL", res);
     if (res != MODEM_RESPONSE_SUCCESS) {
         if (s_start_retry == 0) {
             s_start_retry = 1;
@@ -315,7 +315,7 @@ static void cb_conn(modem_t *modem, const char *resp, modem_response_st_t res, v
         do_error(mqtt);
         return;
     }
-    log_info(TAG, "MQTT connected");
+    log_debug(TAG, "MQTT connected");
     mqtt->state = SX_MQTT_STATE_CONNECTED;
     if (mqtt->on_connected) mqtt->on_connected(mqtt);
 }
